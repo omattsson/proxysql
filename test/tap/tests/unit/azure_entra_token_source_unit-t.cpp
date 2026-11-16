@@ -172,29 +172,50 @@ void test_invalidate_matching_generation_only() {
 	rig.request(1);
 	rig.sink->wait_for(1);
 	rig.source->invalidate(kKey, 2);
-	rig.request(2);
-	const bool kept = rig.sink->wait_for(2) && rig.http.count() == 1;
+	std::this_thread::sleep_for(100ms);
+	const bool kept = rig.http.count() == 1;
 	rig.source->invalidate(kKey, 1);
+	ok(kept && eventually([&] { return rig.source->snapshot().token_refresh_successes == 2; }) &&
+		rig.http.count() == 2,
+		"invalidate_matching_generation_only: only the current generation starts a refresh");
+}
+
+void test_invalidate_keeps_shared_token() {
+	Rig rig;
+	rig.request(1);
+	rig.sink->wait_for(1);
+	{
+		std::lock_guard<std::mutex> lock(rig.http.mutex);
+		rig.http.block = true;
+		rig.http.reply = { 503, R"({"error":"temporarily_unavailable"})" };
+	}
+	rig.source->invalidate(kKey, 1);
+	const bool refetch_started = rig.http.wait_posts(2);
+	rig.request(2);
+	const bool served_during_fetch = rig.sink->wait_for(2, 200ms) && rig.sink->status(1) == AwsIamStatus::OK &&
+		rig.sink->completions[1].result.generation == 1;
+	rig.http.release();
+	const bool fetch_failed = eventually([&] { return rig.source->snapshot().token_refresh_failures == 1; });
 	rig.request(3);
-	ok(kept && rig.sink->wait_for(3) && rig.http.count() == 2,
-		"invalidate_matching_generation_only");
+	ok(refetch_started && served_during_fetch && fetch_failed && rig.sink->wait_for(3) &&
+		rig.sink->status(2) == AwsIamStatus::OK && rig.sink->completions[2].result.generation == 1,
+		"invalidate_keeps_shared_token: other users keep the token while and after a failed refresh");
 }
 
 void test_invalidate_rate_limited() {
 	Rig rig;
+	auto refreshes = [&] { return rig.source->snapshot().token_refresh_successes; };
 	rig.request(1);
 	rig.sink->wait_for(1);
 	rig.source->invalidate(kKey, 1);
-	rig.request(2);
-	const bool refetched = rig.sink->wait_for(2) && rig.http.count() == 2;
+	const bool refetched = eventually([&] { return refreshes() == 2; });
 	rig.clock.advance(10s);
 	rig.source->invalidate(kKey, 2);
-	rig.request(3);
-	const bool kept = rig.sink->wait_for(3) && rig.http.count() == 2;
+	std::this_thread::sleep_for(100ms);
+	const bool kept = rig.http.count() == 2;
 	rig.clock.advance(51s);
 	rig.source->invalidate(kKey, 2);
-	rig.request(4);
-	ok(refetched && kept && rig.sink->wait_for(4) && rig.http.count() == 3,
+	ok(refetched && kept && eventually([&] { return refreshes() == 3; }) && rig.http.count() == 3,
 		"invalidate_rate_limited: at most one accepted invalidate per 60 s");
 }
 
@@ -278,6 +299,7 @@ int main() {
 	test_concurrent_requests_coalesce();
 	test_refresh_ahead();
 	test_invalidate_matching_generation_only();
+	test_invalidate_keeps_shared_token();
 	test_invalidate_rate_limited();
 	test_failure_backoff();
 	test_serve_until_expiry();

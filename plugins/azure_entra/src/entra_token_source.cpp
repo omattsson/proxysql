@@ -133,13 +133,18 @@ void AzureEntraTokenSource::cancel(AwsIamRequestHandle handle) {
 }
 
 void AzureEntraTokenSource::invalidate(const AwsIamTokenKey&, uint64_t generation) {
-	std::lock_guard<std::mutex> lock(mutex_);
-	const Clock::time_point now = now_();
-	if (token_.empty() || generation != generation_) return;
-	if (invalidated_once_ && now - last_invalidate_ < kInvalidateInterval) return;
-	token_.clear();
-	invalidated_once_ = true;
-	last_invalidate_ = now;
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		const Clock::time_point now = now_();
+		if (token_.empty() || generation != generation_) return;
+		if (invalidated_once_ && now - last_invalidate_ < kInvalidateInterval) return;
+		// One token serves every user, and a 1045 is usually one user's mapping:
+		// refresh, but keep serving the current token (#6649).
+		fetch_requested_ = true;
+		invalidated_once_ = true;
+		last_invalidate_ = now;
+	}
+	cv_.notify_all();
 }
 
 void AzureEntraTokenSource::record_backend_connection(bool success) {

@@ -70,7 +70,10 @@ SET mysql-monitor_backend_auth = 'azure_entra';
 LOAD MYSQL VARIABLES TO RUNTIME;
 ```
 
-`mysql-monitor_password` is then not used. The default is `password`.
+The default is `password`. The monitor then does not send
+`mysql-monitor_password` to the backends. Keep `mysql-monitor_password` set to
+a strong value: ProxySQL still accepts the monitor user with this password on
+the Admin and stats interfaces.
 
 ## Behaviour
 
@@ -79,8 +82,10 @@ LOAD MYSQL VARIABLES TO RUNTIME;
 - A session waits at most 5 seconds for a token. The HTTP call to Entra times
   out after 4 seconds.
 - After a failed token request, requests fail for 2 seconds before the next try.
-- An "Access denied" (1045) drops the cached token at most once per minute, and
-  the session tries once more with a new token.
+- An "Access denied" (1045) starts a token refresh, at most once per minute.
+  The session tries once more. Other sessions keep the cached token until the
+  refresh succeeds, so one user without `CREATE AADUSER` does not affect the
+  other users.
 - Token connections are never reused for another user and never reset with
   `COM_CHANGE_USER`.
 
