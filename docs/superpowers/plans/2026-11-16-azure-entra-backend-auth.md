@@ -48,7 +48,9 @@
 
 ### Task 0: Spike — Connector/C handshake against real Azure
 
-This is the main unverified risk from the investigation. Do it before Task 1. Do not commit the spike.
+This is the main unverified risk from the investigation. Do it before Task 1. The spike lives in `docs/superpowers/spikes/2026-11-16-entra-connect/` (not for the upstream PR).
+
+Status 2026-11-16: handshake verified with the vendored Connector/C 3.3.8 and with the `mariadb` 11.4 client. Azure validated the token and answered 9106 (principal not mapped: PIM member activation for `kvk-mysql-readers` waits for approval). Open: one successful login.
 
 **Files:**
 - Create (scratch, outside the repo): `spike_entra_connect.cpp`
