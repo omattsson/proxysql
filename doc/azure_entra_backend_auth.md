@@ -28,8 +28,9 @@ managed identity. The MySQL user name is the name you give here:
 CREATE AADUSER 'proxysql_app' IDENTIFIED BY '<client id of the managed identity>';
 GRANT SELECT, INSERT, UPDATE, DELETE ON app.* TO 'proxysql_app'@'%';
 
--- Optional: a monitor user for the same identity or another one.
-CREATE AADUSER 'proxysql_monitor' IDENTIFIED BY '<client id>';
+-- Optional: a monitor user. It uses the same managed identity: ProxySQL
+-- has one token for all users.
+CREATE AADUSER 'proxysql_monitor' IDENTIFIED BY '<client id of the managed identity>';
 GRANT REPLICATION CLIENT, PROCESS ON *.* TO 'proxysql_monitor'@'%';
 ```
 
