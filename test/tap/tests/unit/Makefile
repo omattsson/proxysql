@@ -742,7 +742,8 @@ UNIT_TESTS += aws_iam_policy_unit-t aws_iam_connection_config_unit-t \
 	aws_iam_pool_unit-t aws_iam_failure_unit-t aws_iam_kill_helper_unit-t \
 	mysql_backend_auth_in_use_unit-t
 # Azure Entra backend authentication (#6649), also PROXYSQL40 only.
-UNIT_TESTS += azure_entra_policy_unit-t azure_entra_connection_config_unit-t
+UNIT_TESTS += azure_entra_policy_unit-t azure_entra_connection_config_unit-t \
+	backend_token_slot_unit-t
 # mysqlx + plugin + test_mysqlx unit tests: always built under PROXYSQL40=1.
 UNIT_TESTS += \
 	managed_configuration_contract_unit-t \

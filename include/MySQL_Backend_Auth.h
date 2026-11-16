@@ -19,6 +19,9 @@ enum class MySQLBackendAuthType : uint8_t {
 /** @brief Whether the type authenticates with a short-lived token instead of a password. */
 bool mysql_backend_auth_uses_token(MySQLBackendAuthType type);
 
+/** @brief The token-source slot of a token type; false for PASSWORD and INVALID. */
+bool backend_token_provider_for(MySQLBackendAuthType type, BackendTokenProvider& out);
+
 struct MySQLBackendAuthPolicy {
 	MySQLBackendAuthType type{MySQLBackendAuthType::INVALID};
 	std::string database_user;

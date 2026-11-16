@@ -164,6 +164,8 @@ struct AwsIamRuntimeConfig {
 
 using AwsIamTokenSourceDestroyFn = void (*)(AwsIamTokenSource *);
 
+struct BackendTokenSlot;
+
 class AwsIamTokenSourceLease {
 public:
 	AwsIamTokenSourceLease() = default;
@@ -179,11 +181,13 @@ public:
 	AwsIamTokenSourceLease& operator=(const AwsIamTokenSourceLease&) = delete;
 
 private:
-	explicit AwsIamTokenSourceLease(AwsIamTokenSource *source) : source_(source) {}
+	AwsIamTokenSourceLease(AwsIamTokenSource *source, BackendTokenSlot *slot)
+		: source_(source), slot_(slot) {}
 	void release();
 	AwsIamTokenSource *source_ { nullptr };
+	BackendTokenSlot *slot_ { nullptr };
 
-	friend AwsIamTokenSourceLease acquire_global_aws_iam_token_source();
+	friend AwsIamTokenSourceLease acquire_backend_token_source(BackendTokenProvider);
 };
 
 std::unique_ptr<AwsIamTokenSource> create_aws_iam_token_source(
@@ -203,6 +207,17 @@ void shutdown_global_aws_iam_token_source();
 bool install_global_aws_iam_token_source(
 	AwsIamTokenSource *source, AwsIamTokenSourceDestroyFn destroy, AwsIamModuleHandle module_handle);
 bool uninstall_global_aws_iam_token_source(AwsIamTokenSource *expected_source);
+
+// The same operations for one provider's slot; the *_aws_iam_* functions above
+// act on the AWS_IAM slot. GloAwsIamTokenSource and the AWS Prometheus metrics
+// follow the AWS_IAM slot only.
+void publish_global_backend_token_source(BackendTokenProvider, AwsIamTokenSource *source);
+bool install_global_backend_token_source(BackendTokenProvider, AwsIamTokenSource *source,
+	AwsIamTokenSourceDestroyFn destroy, AwsIamModuleHandle module_handle);
+bool uninstall_global_backend_token_source(BackendTokenProvider, AwsIamTokenSource *expected_source);
+AwsIamTokenSourceLease acquire_backend_token_source(BackendTokenProvider);
+/** @brief Retire every slot; process shutdown calls it once. */
+void shutdown_global_backend_token_sources();
 
 extern AwsIamTokenSource* GloAwsIamTokenSource;
 

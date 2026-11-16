@@ -218,6 +218,19 @@ bool mysql_backend_auth_uses_token(MySQLBackendAuthType type) {
 	return type == MySQLBackendAuthType::AWS_IAM || type == MySQLBackendAuthType::AZURE_ENTRA;
 }
 
+bool backend_token_provider_for(MySQLBackendAuthType type, BackendTokenProvider& out) {
+	switch (type) {
+		case MySQLBackendAuthType::AWS_IAM:
+			out = BackendTokenProvider::AWS_IAM;
+			return true;
+		case MySQLBackendAuthType::AZURE_ENTRA:
+			out = BackendTokenProvider::AZURE_ENTRA;
+			return true;
+		default:
+			return false;
+	}
+}
+
 MySQLBackendAuthPolicy parse_mysql_backend_auth_policy(
 	std::string_view database_user,
 	std::string_view attributes,
