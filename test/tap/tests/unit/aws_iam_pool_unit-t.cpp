@@ -219,6 +219,23 @@ void test_identity_matrix(MySQL_Thread& worker) {
 	iam.reset();
 }
 
+// A user switched to Azure Entra must not keep using connections opened with
+// the password: the switch takes effect at once (#6649).
+void test_entra_needs_entra_connection(MySQL_Thread& worker) {
+	MySrvC *server = create_server(804, "entra-matrix");
+	SessionFixture request(worker, 804, MySQLBackendAuthType::AZURE_ENTRA);
+	auto password = create_established_connection(
+		server, kUser, MySQLBackendAuthType::PASSWORD);
+	auto entra = create_established_connection(
+		server, kUser, MySQLBackendAuthType::AZURE_ENTRA);
+	ok(password->requires_CHANGE_USER(request.frontend, MySQLBackendAuthType::AZURE_ENTRA),
+		"a password connection does not serve the same user after a switch to Azure Entra");
+	ok(!entra->requires_CHANGE_USER(request.frontend, MySQLBackendAuthType::AZURE_ENTRA),
+		"an Azure Entra connection serves the same Azure Entra user");
+	ok(!entra->requires_CHANGE_USER(request.frontend, MySQLBackendAuthType::PASSWORD),
+		"an Azure Entra connection still serves the same user after a switch to password");
+}
+
 void test_runtime_mode_changes_global(MySQL_Thread& worker) {
 	MySrvC *password_server = create_server(802, "password-to-iam");
 	SessionFixture iam_request(worker, 802, MySQLBackendAuthType::AWS_IAM);
@@ -1037,7 +1054,7 @@ int main() {
 	skip(1, "requires GNU ld --wrap support");
 	return exit_status();
 #else
-	plan(48);
+	plan(51);
 	if (test_init_minimal() != 0 || test_init_auth() != 0 ||
 		test_init_query_processor() != 0 ||
 		test_init_hostgroups() != 0) {
@@ -1069,6 +1086,7 @@ int main() {
 		if (!worker.init()) BAIL_OUT("MySQL_Thread::init() failed");
 		worker.curtime = 10000000;
 		test_identity_matrix(worker);            // 7
+		test_entra_needs_entra_connection(worker); // 3
 		test_runtime_mode_changes_global(worker); // 2
 		test_runtime_mode_change_local(worker);   // 2
 #ifdef PROXYSQL40

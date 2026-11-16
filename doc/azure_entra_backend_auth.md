@@ -96,6 +96,8 @@ the Admin and stats interfaces.
   `proxysql_mysql_azure_entra_waiting_sessions`.
 - Token connections are never reused for another user and never reset with
   `COM_CHANGE_USER`.
+- When a user changes to `azure_entra`, ProxySQL stops using that user's
+  pooled password connections. It closes each one when a session would reuse it.
 
 ## Failure codes
 

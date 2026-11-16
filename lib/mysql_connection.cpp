@@ -744,8 +744,13 @@ bool MySQL_Connection::get_status_sql_log_bin0() {
 
 #ifdef PROXYSQL40
 bool MySQL_Connection::backend_auth_compatible(
-	const char *requested_username, MySQLBackendAuthType) const
+	const char *requested_username, MySQLBackendAuthType requested_type) const
 {
+	// A switch to Azure Entra drops the password connections at once (#6649).
+	if (requested_type == MySQLBackendAuthType::AZURE_ENTRA &&
+		backend_auth_type_ != MySQLBackendAuthType::AZURE_ENTRA) {
+		return false;
+	}
 	// Authentication is established when the connection opens. Its original
 	// mode and token lifetime do not change the authenticated username.
 	return requested_username != nullptr && userinfo != nullptr &&

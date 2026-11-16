@@ -7,8 +7,7 @@
  * backend password, so a fail-open path (sending the password) would make the
  * query succeed. A control step first proves the user and password log in
  * to the backend directly; it goes around ProxySQL so that no pooled
- * connection exists for the user (the pool matches connections by user name,
- * not by auth type). It also checks the admin wiring of 'mysql-monitor_backend_auth'
+ * connection exists for the user. It also checks the admin wiring of 'mysql-monitor_backend_auth'
  * and that no AzureEntra_* stats rows exist without a token source.
  */
 #include <cstdlib>
@@ -25,8 +24,7 @@
 
 using std::string;
 
-// A new name per run: the pool keeps connections of a deleted user, and it
-// matches connections by user name, not by auth type.
+// A new name per run: the pool keeps connections of a deleted user.
 static const std::string kUserName = "tap_entra_" + std::to_string(getpid());
 static const char *const kUser = kUserName.c_str();
 static constexpr const char *kPassword = "Entr4-fr0nt3nd-and-b4ckend!";
