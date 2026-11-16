@@ -2,6 +2,7 @@
 
 #include "../../../deps/json/json.hpp"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 
@@ -60,7 +61,7 @@ EntraTokenResponse exchange_workload_identity(const EntraConfig& cfg,
 	cleanse(form);
 	cleanse(assertion);
 
-	const nlohmann::json body = nlohmann::json::parse(response.body, nullptr, false);
+	nlohmann::json body = nlohmann::json::parse(response.body, nullptr, false);
 	cleanse(response.body);
 	if (body.is_discarded() || !body.is_object()) {
 		return failure("provider_error", response.status == 0 ? "transport" : "");
@@ -69,16 +70,22 @@ EntraTokenResponse exchange_workload_identity(const EntraConfig& cfg,
 		return failure("provider_error", string_field(body, "error"), string_field(body, "correlation_id"));
 	}
 	std::string token = string_field(body, "access_token");
+	const auto parsed_token = body.find("access_token");
+	if (parsed_token != body.end() && parsed_token->is_string()) cleanse(parsed_token->get_ref<std::string&>());
 	long long expires = 0;
 	const auto exp = body.find("expires_in");
 	if (exp != body.end() && exp->is_number_integer()) {
 		expires = exp->get<long long>();
 	} else if (exp != body.end() && exp->is_string()) {
-		expires = std::atoll(exp->get<std::string>().c_str());
+		expires = std::strtoll(exp->get<std::string>().c_str(), nullptr, 10);
 	}
-	if (token.empty() || expires <= 0) {
+	// A token that lives 60 s or less is never usable (30 s margin); cap the
+	// lifetime so the expiry time cannot overflow.
+	if (token.empty() || expires <= 60) {
+		cleanse(token);
 		return failure("provider_error", "invalid_token_response");
 	}
+	expires = std::min(expires, 24LL * 3600);
 	EntraTokenResponse r;
 	r.ok = true;
 	// Core's OPENSSL_cleanse: the token can outlive this plugin (Aws_Iam_Provider.h).

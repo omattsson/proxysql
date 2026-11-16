@@ -82,10 +82,15 @@ the Admin and stats interfaces.
 - A session waits at most 5 seconds for a token. The HTTP call to Entra times
   out after 4 seconds.
 - After a failed token request, requests fail for 2 seconds before the next try.
-- An "Access denied" (1045) starts a token refresh, at most once per minute.
-  The session tries once more. Other sessions keep the cached token until the
-  refresh succeeds, so one user without `CREATE AADUSER` does not affect the
-  other users.
+  While the cached token is still usable, the wait after each failed refresh
+  doubles, up to 60 seconds.
+- An "Access denied" (1045) fails the session with `backend_auth_rejected` and
+  starts a token refresh, at most once per minute. Other sessions keep the
+  cached token until the refresh succeeds, so one user without
+  `CREATE AADUSER` does not affect the other users.
+- The monitor waits at least 5 seconds for a token, also when
+  `mysql-monitor_connect_timeout` is shorter.
+- `stats_mysql_global` shows the token source counters as `AzureEntra_*` rows.
 - Token connections are never reused for another user and never reset with
   `COM_CHANGE_USER`.
 
@@ -103,4 +108,5 @@ Log lines start with `Azure Entra backend ...`. Clients get ERR 9002
 | `unix_socket_not_allowed` | The server is a Unix socket. |
 | `provider_error` | Entra refused the token request; `code` and `request_id` show the Entra error and correlation id. |
 | `credential_provider_error` | The federated token file cannot be read. |
-| `backend_auth_rejected` | The server refused the token twice (check `CREATE AADUSER` and the user name). |
+| `backend_auth_rejected` | The server refused the token (check `CREATE AADUSER` and the user name). |
+| `token_timeout` | The monitor got no token in time. |

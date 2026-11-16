@@ -5,6 +5,7 @@
 #include <string>
 #include <string_view>
 
+#include "Aws_Iam_Provider.h"
 #include "Aws_Iam_Types.h"
 
 class MySQL_Authentication;
@@ -24,6 +25,8 @@ const char* backend_token_log_label(MySQLBackendAuthType type);
 
 /** @brief The token-source slot of a token type; false for PASSWORD and INVALID. */
 bool backend_token_provider_for(MySQLBackendAuthType type, BackendTokenProvider& out);
+/** The token source for a token auth type; an empty lease for any other type (fails closed). */
+AwsIamTokenSourceLease acquire_backend_token_source_for(MySQLBackendAuthType type);
 
 struct MySQLBackendAuthPolicy {
 	MySQLBackendAuthType type{MySQLBackendAuthType::INVALID};

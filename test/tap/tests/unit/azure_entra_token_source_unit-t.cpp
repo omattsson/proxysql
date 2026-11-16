@@ -9,11 +9,15 @@
 
 #include <atomic>
 #include <condition_variable>
+#include <fstream>
 #include <future>
 #include <memory>
 #include <mutex>
 #include <thread>
 #include <vector>
+
+#include <stdlib.h>
+#include <unistd.h>
 
 using namespace std::chrono_literals;
 using Clock = std::chrono::steady_clock;
@@ -234,6 +238,44 @@ void test_failure_backoff() {
 		"failure_backoff: 20 requests within 2 s cause 1 POST; a request after 2 s tries again");
 }
 
+void test_refresh_backoff_grows() {
+	Rig rig;
+	auto failures = [&] { return rig.source->snapshot().token_refresh_failures; };
+	auto step = [&](std::chrono::milliseconds d) { rig.clock.advance(d); rig.source->wake(); };
+	rig.request(1);
+	rig.sink->wait_for(1);
+	rig.http.set_reply(503, "{}");
+	step(51min);
+	const bool first = eventually([&] { return failures() == 1; });
+	step(2100ms);
+	const bool second = eventually([&] { return failures() == 2; });
+	step(2100ms);
+	std::this_thread::sleep_for(1200ms);
+	const bool waited = rig.http.count() == 3;
+	step(2100ms);
+	ok(first && second && waited && eventually([&] { return failures() == 3; }),
+		"refresh_backoff_grows: with a usable token, the wait after each failed refresh doubles");
+}
+
+void test_file_assertion_reader() {
+	char path[] = "/tmp/entra_assertion_XXXXXX";
+	const int fd = mkstemp(path);
+	const std::string jwt = "hdr.payload.sig";
+	const bool written = fd >= 0 && write(fd, (jwt + "\n").data(), jwt.size() + 1) == (ssize_t)(jwt.size() + 1);
+	if (fd >= 0) close(fd);
+	std::string out;
+	const bool read_ok = file_assertion_reader(path)(out) && out == jwt;
+	{
+		std::ofstream big(path, std::ios::binary | std::ios::trunc);
+		big << std::string(20000, 'a');
+	}
+	out.clear();
+	const bool big_refused = !file_assertion_reader(path)(out) && out.empty();
+	unlink(path);
+	ok(written && read_ok && big_refused,
+		"file_assertion_reader: trims the newline and refuses a file over 16 KiB");
+}
+
 void test_serve_until_expiry() {
 	Rig rig;
 	rig.request(1);
@@ -302,7 +344,9 @@ int main() {
 	test_invalidate_keeps_shared_token();
 	test_invalidate_rate_limited();
 	test_failure_backoff();
+	test_refresh_backoff_grows();
 	test_serve_until_expiry();
+	test_file_assertion_reader();
 	test_waiter_limit();
 	test_shutdown_answers_waiters();
 	test_request_blocking();

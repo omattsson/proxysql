@@ -84,9 +84,7 @@ using json = nlohmann::json;
 
 #ifdef PROXYSQL40
 static void record_backend_token_connection(MySQLBackendAuthType type, bool success) {
-	BackendTokenProvider provider;
-	if (!backend_token_provider_for(type, provider)) return;
-	AwsIamTokenSourceLease source = acquire_backend_token_source(provider);
+	AwsIamTokenSourceLease source = acquire_backend_token_source_for(type);
 	if (source) source->record_backend_connection(success);
 }
 #endif // PROXYSQL40
@@ -430,9 +428,7 @@ void* kill_query_thread(void *arg) {
 
 #ifdef PROXYSQL40
 	if (iam_mode) {
-		BackendTokenProvider provider = BackendTokenProvider::AWS_IAM;
-		backend_token_provider_for(ka->backend_auth_type, provider);
-		iam_source = acquire_backend_token_source(provider);
+		iam_source = acquire_backend_token_source_for(ka->backend_auth_type);
 		AwsIamConnectionConfigInput input;
 		input.database_user = ka->database_user;
 		input.configured_endpoint = ka->configured_endpoint;
@@ -4432,28 +4428,30 @@ bool MySQL_Session::handler_again___status_CONNECTING_SERVER(int *_rc) {
 						!failed_key.endpoint.empty() && failed_key.port != 0 &&
 						(token_type != MySQLBackendAuthType::AWS_IAM || !failed_key.region.empty()) &&
 						!failed_key.database_user.empty()) {
-						BackendTokenProvider provider;
-						if (backend_token_provider_for(token_type, provider)) {
-							invalidation_source = acquire_backend_token_source(provider);
-						}
+						invalidation_source = acquire_backend_token_source_for(token_type);
 					}
 					if (invalidation_source) {
-						proxy_error(
-							"%s backend connection failure user='%s' hostgroup=%u endpoint='%s'"
-							" region='%s' category='backend_auth_rejected' code='' request_id=''\n",
-							token_label, failed_key.database_user.c_str(), failed_hostgroup,
-							failed_key.endpoint.c_str(), failed_key.region.c_str());
 						invalidation_source->invalidate(
 							failed_key, failed_generation);
-						myds->connect_retries_on_failure = 0;
-						myds->destroy_MySQL_Connection_From_Pool(false);
-						aws_iam_connect_token_key = AwsIamTokenKey {};
-						aws_iam_connect_token_generation = 0;
-						aws_iam_fresh_token_retry_attempted = true;
-						NEXT_IMMEDIATE_NEW(CONNECTING_SERVER);
+						// #6649: Entra refreshes its one shared token in the background,
+						// so an immediate retry would resend the same token.
+						if (token_type == MySQLBackendAuthType::AWS_IAM) {
+							proxy_error(
+								"%s backend connection failure user='%s' hostgroup=%u endpoint='%s'"
+								" region='%s' category='backend_auth_rejected' code='' request_id=''\n",
+								token_label, failed_key.database_user.c_str(), failed_hostgroup,
+								failed_key.endpoint.c_str(), failed_key.region.c_str());
+							myds->connect_retries_on_failure = 0;
+							myds->destroy_MySQL_Connection_From_Pool(false);
+							aws_iam_connect_token_key = AwsIamTokenKey {};
+							aws_iam_connect_token_generation = 0;
+							aws_iam_fresh_token_retry_attempted = true;
+							NEXT_IMMEDIATE_NEW(CONNECTING_SERVER);
+						}
 					}
 					if (connect_errno == ER_ACCESS_DENIED_ERROR &&
-						aws_iam_fresh_token_retry_attempted) {
+						(aws_iam_fresh_token_retry_attempted ||
+						 token_type == MySQLBackendAuthType::AZURE_ENTRA)) {
 						proxy_error(
 							"%s backend connection failure user='%s' hostgroup=%u endpoint='%s'"
 							" region='%s' category='backend_auth_rejected' code='' request_id=''%s\n",
@@ -10593,9 +10591,7 @@ void MySQL_Session::handler___client_DSS_QUERY_SENT___server_DSS_NOT_INITIALIZED
 			input.ssl_capath = ssl_params != nullptr
 				? ssl_params->ssl_capath
 				: (mysql_thread___ssl_p2s_capath != nullptr ? mysql_thread___ssl_p2s_capath : "");
-			BackendTokenProvider provider = BackendTokenProvider::AWS_IAM;
-			backend_token_provider_for(backend_auth_policy.type, provider);
-			AwsIamTokenSourceLease lease = acquire_backend_token_source(provider);
+			AwsIamTokenSourceLease lease = acquire_backend_token_source_for(backend_auth_policy.type);
 			input.support_compiled = lease && lease->support_compiled();
 
 			AwsIamConnectionConfigResult config =

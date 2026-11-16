@@ -9,11 +9,12 @@
 
 #include <openssl/crypto.h>
 
+#include <algorithm>
 #include <cstring>
 
 bool prepare_monitor_token_auth(MYSQL *mysql, const char *hostname, uint16_t port, bool use_ssl,
 	const MySQLServers_SslParams *ssl, const char *monitor_user,
-	std::chrono::steady_clock::time_point deadline, MonitorTokenAuth& out) {
+	int connect_timeout_ms, MonitorTokenAuth& out) {
 	AwsIamTokenSourceLease source = acquire_backend_token_source(BackendTokenProvider::AZURE_ENTRA);
 	AwsIamConnectionConfigInput input;
 	input.database_user = monitor_user != nullptr ? monitor_user : "";
@@ -38,9 +39,12 @@ bool prepare_monitor_token_auth(MYSQL *mysql, const char *hostname, uint16_t por
 		out.failure_code = config.failure_code;
 		return false;
 	}
+	const auto deadline = std::chrono::steady_clock::now() +
+		std::chrono::milliseconds(std::max(connect_timeout_ms, 5000));
 	AwsIamTokenResult result = source->request_blocking(config.key, deadline);
 	if (result.status != AwsIamStatus::OK || result.token.empty()) {
-		out.failure_code = result.failure.category.empty() ? "token_request_failed" : result.failure.category;
+		out.failure_code = result.status == AwsIamStatus::TIMEOUT ? "token_timeout"
+			: result.failure.category.empty() ? "token_request_failed" : result.failure.category;
 		return false;
 	}
 	out.key = config.key;

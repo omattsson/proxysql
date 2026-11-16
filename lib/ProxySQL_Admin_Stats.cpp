@@ -686,6 +686,15 @@ void ProxySQL_Admin::stats___mysql_global() {
 		aws_iam_stats_mysql_global_rows(global_aws_iam_stats_snapshot())) {
 		sqlite3_global_stats_row_step(statsdb, row_stmt, row.name, row.value);
 	}
+	{
+		AwsIamTokenSourceLease entra = acquire_backend_token_source(BackendTokenProvider::AZURE_ENTRA);
+		if (entra) {
+			for (const AwsIamNamedStat& row : backend_token_stats_mysql_global_rows(
+				BackendTokenProvider::AZURE_ENTRA, entra->snapshot())) {
+				sqlite3_global_stats_row_step(statsdb, row_stmt, row.name, row.value);
+			}
+		}
+	}
 #endif // PROXYSQL40
 
 	statsdb->execute("COMMIT");

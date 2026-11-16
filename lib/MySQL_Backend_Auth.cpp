@@ -235,6 +235,12 @@ bool backend_token_provider_for(MySQLBackendAuthType type, BackendTokenProvider&
 	}
 }
 
+AwsIamTokenSourceLease acquire_backend_token_source_for(MySQLBackendAuthType type) {
+	BackendTokenProvider provider;
+	if (!backend_token_provider_for(type, provider)) return {};
+	return acquire_backend_token_source(provider);
+}
+
 MySQLBackendAuthPolicy parse_mysql_backend_auth_policy(
 	std::string_view database_user,
 	std::string_view attributes,

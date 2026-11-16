@@ -635,23 +635,18 @@ void test_entra_1045_invalidates_once(MySQL_Thread& worker) {
 	ScopedPublishedTokenSource published_azure(&azure, BackendTokenProvider::AZURE_ENTRA);
 	reset_connector({ { ER_ACCESS_DENIED_ERROR, kBackendText, false },
 		{ ER_ACCESS_DENIED_ERROR, kBackendText, false } });
+	client_error_code = 0;
 	SessionFixture fixture(worker, kEntraUser, kEntraHostgroup);
 	fixture.backend()->connect_retries_on_failure = 3;
-	start_iam_attempt(fixture, worker);
-	process_terminal_connect(fixture);
-	const bool retried = azure.invalidated_generations.size() == 1 &&
-		azure.keys.size() == 2 && fixture.session->status == WAITING_AWS_IAM_TOKEN;
-	std::string log;
-	if (retried) {
-		worker.drain_aws_iam_completions();
-		log = capture_stderr([&fixture] { fixture.run(); });
-	}
-	ok(retried && azure.keys.size() == 2 && azure.invalidated_generations.size() == 1 &&
-		fixture.session->status == WAITING_CLIENT_DATA &&
+	const std::string log = capture_stderr([&] { start_iam_attempt(fixture, worker); fixture.run(); });
+	const size_t first = log.find("category='backend_auth_rejected'");
+	ok(azure.keys.size() == 1 && azure.invalidated_generations.size() == 1 && connector_calls == 1 &&
+		fixture.session->status == WAITING_CLIENT_DATA && client_error_code == 9002 &&
 		log.find("Azure Entra backend connection failure") != std::string::npos &&
-		log.find("category='backend_auth_rejected'") != std::string::npos &&
+		first != std::string::npos &&
+		log.find("category='backend_auth_rejected'", first + 1) == std::string::npos &&
 		log.find("clock") == std::string::npos,
-		"entra_1045_invalidates_once: one invalidate, one fresh token, then terminal backend_auth_rejected");
+		"entra_1045_no_retry: one invalidate (starts a refresh), no retry with the same token, one terminal backend_auth_rejected");
 }
 
 void test_entra_retry_flag_reset_on_success(MySQL_Thread& worker) {

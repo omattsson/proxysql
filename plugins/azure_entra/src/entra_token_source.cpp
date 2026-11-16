@@ -1,7 +1,7 @@
 #include "entra_token_source.h"
 
+#include <algorithm>
 #include <fstream>
-#include <iterator>
 #include <utility>
 #include <vector>
 
@@ -11,6 +11,8 @@ namespace {
 
 constexpr std::chrono::seconds kUsableMargin { 30 };
 constexpr std::chrono::seconds kFailureBackoff { 2 };
+constexpr std::chrono::seconds kMaxRefreshBackoff { 60 };
+constexpr size_t kMaxAssertionBytes { 16 * 1024 };
 constexpr std::chrono::seconds kInvalidateInterval { 60 };
 
 std::chrono::seconds refresh_lead(std::chrono::seconds lifetime) {
@@ -196,11 +198,17 @@ void AzureEntraTokenSource::run() {
 			expires_at_ = now + response.expires_in;
 			refresh_at_ = expires_at_ - refresh_lead(response.expires_in);
 			backoff_until_ = {};
+			failed_refreshes_ = 0;
 			++stats_.token_refresh_successes;
 		} else {
 			// A failed refresh keeps a still-valid token (usable_locked decides).
 			last_failure_ = response.failure;
-			backoff_until_ = now + kFailureBackoff;
+			// While a usable token is held, double the wait (2 s up to 60 s) so an
+			// Entra outage or throttling does not get a request every 2 s.
+			backoff_until_ = now + (usable_locked(now)
+				? std::min(kFailureBackoff * (1u << std::min(failed_refreshes_, 5u)), kMaxRefreshBackoff)
+				: kFailureBackoff);
+			++failed_refreshes_;
 			++stats_.token_refresh_failures;
 			if (last_failure_.category == "credential_provider_error") ++stats_.credential_provider_failures;
 		}
@@ -241,7 +249,13 @@ std::function<bool(std::string&)> file_assertion_reader(std::string path) {
 	return [path = std::move(path)](std::string& out) {
 		std::ifstream in(path, std::ios::binary);
 		if (!in) return false;
-		out.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+		out.assign(kMaxAssertionBytes + 1, '\0');
+		in.read(&out[0], static_cast<std::streamsize>(out.size()));
+		out.resize(static_cast<size_t>(in.gcount()));
+		if (out.size() > kMaxAssertionBytes) {
+			out.clear();
+			return false;
+		}
 		while (!out.empty() && (out.back() == '\n' || out.back() == '\r' || out.back() == ' ')) out.pop_back();
 		return !out.empty();
 	};

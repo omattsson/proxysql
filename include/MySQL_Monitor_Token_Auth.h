@@ -22,7 +22,8 @@ struct MonitorTokenAuth {
 
 /**
  * @brief Validate the server as an Azure Entra backend, get a token from the
- *   Azure slot with request_blocking(), and set the same connector options as
+ *   Azure slot with request_blocking() (waits at least 5 s, like a session, so a
+ *   cold fetch fits), and set the same connector options as
  *   the backend handshake (TLS enforced and verified, cleartext auth, server
  *   name = endpoint, no reconnect).
  * @return false with out.failure_code set; the caller must not connect then.
@@ -30,7 +31,7 @@ struct MonitorTokenAuth {
  */
 bool prepare_monitor_token_auth(MYSQL *mysql, const char *hostname, uint16_t port, bool use_ssl,
 	const MySQLServers_SslParams *ssl, const char *monitor_user,
-	std::chrono::steady_clock::time_point deadline, MonitorTokenAuth& out);
+	int connect_timeout_ms, MonitorTokenAuth& out);
 
 /** @brief Drop the token copies left in the connector after mysql_real_connect(). */
 void cleanse_monitor_connector_password(MYSQL *mysql);

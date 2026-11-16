@@ -141,6 +141,15 @@ void test_exchange() {
 	r = exchange_workload_identity(cfg, assertion_is("a"), rec.fn());
 	ok(!r.ok && r.failure.category == "provider_error", "an empty access_token is a provider error");
 
+	rec.reply = { 200, R"({"access_token":"t","expires_in":60})" };
+	r = exchange_workload_identity(cfg, assertion_is("a"), rec.fn());
+	ok(!r.ok && r.failure.category == "provider_error" && r.failure.aws_error_code == "invalid_token_response",
+		"expires_in of 60 s or less is refused: the token would never be usable");
+
+	rec.reply = { 200, R"({"access_token":"t","expires_in":"99999999999999999999"})" };
+	r = exchange_workload_identity(cfg, assertion_is("a"), rec.fn());
+	ok(r.ok && r.expires_in == std::chrono::hours(24), "a huge expires_in is capped at 24 h");
+
 	const int calls_before = rec.calls;
 	r = exchange_workload_identity(cfg, [](std::string&) { return false; }, rec.fn());
 	ok(!r.ok && r.failure.category == "credential_provider_error" && rec.calls == calls_before,

@@ -216,21 +216,39 @@ private:
 
 } // namespace
 
-AwsIamNamedStats aws_iam_stats_mysql_global_rows(const AwsIamStatsSnapshot& stats) {
+AwsIamNamedStats backend_token_stats_mysql_global_rows(BackendTokenProvider provider,
+	const AwsIamStatsSnapshot& stats) {
+	static const char *const names[2][12] = {
+		{ "AwsIam_Token_requests", "AwsIam_Token_cache_hits", "AwsIam_Token_refresh_successes",
+		  "AwsIam_Token_refresh_failures", "AwsIam_Credential_provider_failures", "AwsIam_Queue_rejections",
+		  "AwsIam_Backend_connection_successes", "AwsIam_Backend_connection_failures",
+		  "AwsIam_Token_cache_entries", "AwsIam_In_flight_generations", "AwsIam_Queued_generations",
+		  "AwsIam_Waiting_sessions" },
+		{ "AzureEntra_Token_requests", "AzureEntra_Token_cache_hits", "AzureEntra_Token_refresh_successes",
+		  "AzureEntra_Token_refresh_failures", "AzureEntra_Credential_provider_failures",
+		  "AzureEntra_Queue_rejections", "AzureEntra_Backend_connection_successes",
+		  "AzureEntra_Backend_connection_failures", "AzureEntra_Token_cache_entries",
+		  "AzureEntra_In_flight_generations", "AzureEntra_Queued_generations", "AzureEntra_Waiting_sessions" },
+	};
+	const char *const *n = names[static_cast<size_t>(provider)];
 	return {{
-		{ "AwsIam_Token_requests", stats.token_requests },
-		{ "AwsIam_Token_cache_hits", stats.token_cache_hits },
-		{ "AwsIam_Token_refresh_successes", stats.token_refresh_successes },
-		{ "AwsIam_Token_refresh_failures", stats.token_refresh_failures },
-		{ "AwsIam_Credential_provider_failures", stats.credential_provider_failures },
-		{ "AwsIam_Queue_rejections", stats.queue_rejections },
-		{ "AwsIam_Backend_connection_successes", stats.backend_connection_successes },
-		{ "AwsIam_Backend_connection_failures", stats.backend_connection_failures },
-		{ "AwsIam_Token_cache_entries", stats.token_cache_entries },
-		{ "AwsIam_In_flight_generations", stats.in_flight_generations },
-		{ "AwsIam_Queued_generations", stats.queued_generations },
-		{ "AwsIam_Waiting_sessions", stats.waiting_sessions },
+		{ n[0], stats.token_requests },
+		{ n[1], stats.token_cache_hits },
+		{ n[2], stats.token_refresh_successes },
+		{ n[3], stats.token_refresh_failures },
+		{ n[4], stats.credential_provider_failures },
+		{ n[5], stats.queue_rejections },
+		{ n[6], stats.backend_connection_successes },
+		{ n[7], stats.backend_connection_failures },
+		{ n[8], stats.token_cache_entries },
+		{ n[9], stats.in_flight_generations },
+		{ n[10], stats.queued_generations },
+		{ n[11], stats.waiting_sessions },
 	}};
+}
+
+AwsIamNamedStats aws_iam_stats_mysql_global_rows(const AwsIamStatsSnapshot& stats) {
+	return backend_token_stats_mysql_global_rows(BackendTokenProvider::AWS_IAM, stats);
 }
 
 void initialize_aws_iam_prometheus_metrics(prometheus::Registry& registry) {

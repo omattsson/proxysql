@@ -139,6 +139,8 @@ struct AwsIamNamedStat {
 using AwsIamNamedStats = std::array<AwsIamNamedStat, 12>;
 
 AwsIamNamedStats aws_iam_stats_mysql_global_rows(const AwsIamStatsSnapshot&);
+/** stats_mysql_global rows for one provider: AwsIam_* or AzureEntra_*. */
+AwsIamNamedStats backend_token_stats_mysql_global_rows(BackendTokenProvider, const AwsIamStatsSnapshot&);
 void initialize_aws_iam_prometheus_metrics(prometheus::Registry&);
 void update_aws_iam_prometheus_metrics(const AwsIamStatsSnapshot&);
 

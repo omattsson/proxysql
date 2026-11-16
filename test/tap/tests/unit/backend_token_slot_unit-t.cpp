@@ -12,6 +12,7 @@
 #include <dlfcn.h>
 #include <future>
 #include <memory>
+#include <string>
 
 using namespace std::chrono_literals;
 
@@ -57,6 +58,18 @@ void test_provider_mapping() {
 		p == BackendTokenProvider::AWS_IAM, "AWS_IAM maps to the AWS slot");
 	ok(!backend_token_provider_for(MySQLBackendAuthType::PASSWORD, p) &&
 		!backend_token_provider_for(MySQLBackendAuthType::INVALID, p), "non-token types have no slot");
+
+	AwsIamStatsSnapshot snap;
+	snap.token_requests = 7;
+	snap.waiting_sessions = 3;
+	const AwsIamNamedStats entra = backend_token_stats_mysql_global_rows(BackendTokenProvider::AZURE_ENTRA, snap);
+	bool prefixed = true;
+	for (const AwsIamNamedStat& row : entra) prefixed = prefixed && std::string(row.name).rfind("AzureEntra_", 0) == 0;
+	const AwsIamNamedStats aws = aws_iam_stats_mysql_global_rows(snap);
+	ok(prefixed && std::string(entra[0].name) == "AzureEntra_Token_requests" && entra[0].value == 7 &&
+		std::string(entra[11].name) == "AzureEntra_Waiting_sessions" && entra[11].value == 3 &&
+		std::string(aws[0].name) == "AwsIam_Token_requests" && aws[0].value == 7,
+		"entra_stats_rows: Azure rows use the AzureEntra_ prefix, AWS rows are unchanged");
 }
 
 void test_slots_independent() {
@@ -68,6 +81,11 @@ void test_slots_independent() {
 	ok(acquire_global_aws_iam_token_source().get() == aws,
 		"slots_independent: the AWS wrapper returns the AWS source");
 	ok(GloAwsIamTokenSource == aws, "GloAwsIamTokenSource follows the AWS slot only");
+	ok(acquire_backend_token_source_for(MySQLBackendAuthType::AZURE_ENTRA).get() == azure &&
+		acquire_backend_token_source_for(MySQLBackendAuthType::AWS_IAM).get() == aws &&
+		!acquire_backend_token_source_for(MySQLBackendAuthType::PASSWORD) &&
+		!acquire_backend_token_source_for(MySQLBackendAuthType::INVALID),
+		"acquire_for_type: token types get their own slot, other types get no source");
 	ok(install_fake(BackendTokenProvider::AZURE_ENTRA) == nullptr, "an occupied slot refuses a second install");
 
 	ok(uninstall_global_backend_token_source(BackendTokenProvider::AZURE_ENTRA, azure) &&

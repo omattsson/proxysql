@@ -74,6 +74,7 @@ private:
 	Clock::time_point refresh_at_ {};
 	uint64_t generation_ { 0 };
 	Clock::time_point backoff_until_ {};
+	unsigned failed_refreshes_ { 0 };
 	AwsIamRedactedFailure last_failure_;
 	Clock::time_point last_invalidate_ {};
 	bool invalidated_once_ { false };
@@ -88,6 +89,7 @@ private:
 };
 
 /** Reads the projected service-account token on every call (kubelet rotates it). */
+/** Reads the federated token file on each call; refuses a file over 16 KiB. */
 std::function<bool(std::string&)> file_assertion_reader(std::string path);
 
 #endif // AZURE_ENTRA_TOKEN_SOURCE_H
