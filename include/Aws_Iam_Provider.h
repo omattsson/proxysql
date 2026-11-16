@@ -143,6 +143,8 @@ AwsIamNamedStats aws_iam_stats_mysql_global_rows(const AwsIamStatsSnapshot&);
 AwsIamNamedStats backend_token_stats_mysql_global_rows(BackendTokenProvider, const AwsIamStatsSnapshot&);
 void initialize_aws_iam_prometheus_metrics(prometheus::Registry&);
 void update_aws_iam_prometheus_metrics(const AwsIamStatsSnapshot&);
+void initialize_backend_token_prometheus_metrics(BackendTokenProvider, prometheus::Registry&);
+void update_backend_token_prometheus_metrics(BackendTokenProvider, const AwsIamStatsSnapshot&);
 
 class AwsIamTokenSource {
 public:

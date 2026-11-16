@@ -4,6 +4,8 @@
  */
 #include "tap.h"
 
+#include "proxysql.h"
+#include "cpp.h"
 #include "Aws_Iam_Provider.h"
 #include "MySQL_Backend_Auth.h"
 
@@ -13,6 +15,8 @@
 #include <future>
 #include <memory>
 #include <string>
+
+#include "prometheus/registry.h"
 
 using namespace std::chrono_literals;
 
@@ -48,6 +52,40 @@ AwsIamTokenSource *install_fake(BackendTokenProvider provider) {
 		return nullptr;
 	}
 	return source;
+}
+
+/** Value of the first series of a family in the registry; found=false when absent. */
+double metric_value(prometheus::Registry& registry, const std::string& name, bool& found) {
+	found = false;
+	for (const prometheus::MetricFamily& family : registry.Collect()) {
+		if (family.name != name || family.metric.empty()) continue;
+		found = true;
+		return family.type == prometheus::MetricType::Counter
+			? family.metric[0].counter.value : family.metric[0].gauge.value;
+	}
+	return 0;
+}
+
+void test_entra_prometheus_metrics() {
+	GloVars.prometheus_registry = std::make_shared<prometheus::Registry>();
+	prometheus::Registry& registry = *GloVars.prometheus_registry;
+	AwsIamTokenSource *azure = install_fake(BackendTokenProvider::AZURE_ENTRA);
+	bool registered = false;
+	metric_value(registry, "proxysql_mysql_azure_entra_token_requests_total", registered);
+	AwsIamStatsSnapshot snap;
+	snap.token_refresh_failures = 5;
+	snap.waiting_sessions = 2;
+	update_backend_token_prometheus_metrics(BackendTokenProvider::AZURE_ENTRA, snap);
+	bool failures_found = false, waiting_found = false, aws_found = false;
+	const double failures = metric_value(registry,
+		"proxysql_mysql_azure_entra_token_refresh_failures_total", failures_found);
+	const double waiting = metric_value(registry, "proxysql_mysql_azure_entra_waiting_sessions", waiting_found);
+	metric_value(registry, "proxysql_mysql_aws_iam_token_refresh_failures_total", aws_found);
+	ok(azure != nullptr && registered && failures_found && failures == 5 && waiting_found && waiting == 2 &&
+		!aws_found,
+		"entra_prometheus_metrics: an Azure install registers proxysql_mysql_azure_entra_* series; AWS series stay off");
+	if (azure != nullptr) uninstall_global_backend_token_source(BackendTokenProvider::AZURE_ENTRA, azure);
+	GloVars.prometheus_registry.reset();
 }
 
 void test_provider_mapping() {
@@ -141,6 +179,7 @@ void test_publish_per_slot() {
 
 int main() {
 	plan(0);
+	test_entra_prometheus_metrics();
 	test_provider_mapping();
 	test_slots_independent();
 	test_lease_blocks_own_slot_only();

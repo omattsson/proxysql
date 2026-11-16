@@ -91,6 +91,9 @@ the Admin and stats interfaces.
 - The monitor waits at least 5 seconds for a token, also when
   `mysql-monitor_connect_timeout` is shorter.
 - `stats_mysql_global` shows the token source counters as `AzureEntra_*` rows.
+  Prometheus shows the same values as `proxysql_mysql_azure_entra_*` series,
+  for example `proxysql_mysql_azure_entra_token_refresh_failures_total` and
+  `proxysql_mysql_azure_entra_waiting_sessions`.
 - Token connections are never reused for another user and never reset with
   `COM_CHANGE_USER`.
 

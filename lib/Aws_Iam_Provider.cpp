@@ -20,22 +20,48 @@
 
 namespace {
 
-constexpr std::array<const char *, 8> kAwsIamCounterNames {{
-	"proxysql_mysql_aws_iam_token_requests_total",
-	"proxysql_mysql_aws_iam_token_cache_hits_total",
-	"proxysql_mysql_aws_iam_token_refresh_successes_total",
-	"proxysql_mysql_aws_iam_token_refresh_failures_total",
-	"proxysql_mysql_aws_iam_credential_provider_failures_total",
-	"proxysql_mysql_aws_iam_queue_rejections_total",
-	"proxysql_mysql_aws_iam_backend_connection_successes_total",
-	"proxysql_mysql_aws_iam_backend_connection_failures_total",
+// Index = BackendTokenProvider. Each provider has its own series, so the AWS names never change (#6649).
+constexpr std::array<std::array<const char *, 8>, 2> kTokenCounterNames {{
+	{{
+		"proxysql_mysql_aws_iam_token_requests_total",
+		"proxysql_mysql_aws_iam_token_cache_hits_total",
+		"proxysql_mysql_aws_iam_token_refresh_successes_total",
+		"proxysql_mysql_aws_iam_token_refresh_failures_total",
+		"proxysql_mysql_aws_iam_credential_provider_failures_total",
+		"proxysql_mysql_aws_iam_queue_rejections_total",
+		"proxysql_mysql_aws_iam_backend_connection_successes_total",
+		"proxysql_mysql_aws_iam_backend_connection_failures_total",
+	}},
+	{{
+		"proxysql_mysql_azure_entra_token_requests_total",
+		"proxysql_mysql_azure_entra_token_cache_hits_total",
+		"proxysql_mysql_azure_entra_token_refresh_successes_total",
+		"proxysql_mysql_azure_entra_token_refresh_failures_total",
+		"proxysql_mysql_azure_entra_credential_provider_failures_total",
+		"proxysql_mysql_azure_entra_queue_rejections_total",
+		"proxysql_mysql_azure_entra_backend_connection_successes_total",
+		"proxysql_mysql_azure_entra_backend_connection_failures_total",
+	}},
 }};
 
-constexpr std::array<const char *, 4> kAwsIamGaugeNames {{
-	"proxysql_mysql_aws_iam_token_cache_entries",
-	"proxysql_mysql_aws_iam_in_flight_generations",
-	"proxysql_mysql_aws_iam_queued_generations",
-	"proxysql_mysql_aws_iam_waiting_sessions",
+constexpr std::array<std::array<const char *, 4>, 2> kTokenGaugeNames {{
+	{{
+		"proxysql_mysql_aws_iam_token_cache_entries",
+		"proxysql_mysql_aws_iam_in_flight_generations",
+		"proxysql_mysql_aws_iam_queued_generations",
+		"proxysql_mysql_aws_iam_waiting_sessions",
+	}},
+	{{
+		"proxysql_mysql_azure_entra_token_cache_entries",
+		"proxysql_mysql_azure_entra_in_flight_generations",
+		"proxysql_mysql_azure_entra_queued_generations",
+		"proxysql_mysql_azure_entra_waiting_sessions",
+	}},
+}};
+
+constexpr std::array<const char *, 2> kTokenMetricHelp {{
+	"ProxySQL AWS IAM backend authentication",
+	"ProxySQL Azure Entra backend authentication",
 }};
 
 struct AwsIamTokenSourceDestroyer {
@@ -58,9 +84,9 @@ struct AwsIamPrometheusState {
 	std::array<prometheus::Gauge *, 4> gauges {};
 };
 
-AwsIamPrometheusState& aws_iam_prometheus_state() {
-	static AwsIamPrometheusState state;
-	return state;
+AwsIamPrometheusState& token_prometheus_state(BackendTokenProvider provider) {
+	static std::array<AwsIamPrometheusState, 2> states;
+	return states[static_cast<size_t>(provider)];
 }
 
 std::array<uint64_t, 8> aws_iam_counter_values(const AwsIamStatsSnapshot& stats) {
@@ -158,10 +184,12 @@ void set_aws_global(const BackendTokenSlot& slot, AwsIamTokenSource *source) {
 	if (is_aws_slot(slot)) GloAwsIamTokenSource = source;
 }
 
-void init_aws_metrics(const BackendTokenSlot& slot, AwsIamTokenSource *source) {
-	if (is_aws_slot(slot) && source != nullptr && GloVars.prometheus_registry != nullptr) {
-		initialize_aws_iam_prometheus_metrics(*GloVars.prometheus_registry);
-		update_aws_iam_prometheus_metrics(source->snapshot());
+void init_slot_metrics(const BackendTokenSlot& slot, AwsIamTokenSource *source) {
+	if (source != nullptr && GloVars.prometheus_registry != nullptr) {
+		const BackendTokenProvider provider = is_aws_slot(slot)
+			? BackendTokenProvider::AWS_IAM : BackendTokenProvider::AZURE_ENTRA;
+		initialize_backend_token_prometheus_metrics(provider, *GloVars.prometheus_registry);
+		update_backend_token_prometheus_metrics(provider, source->snapshot());
 	}
 }
 
@@ -251,8 +279,9 @@ AwsIamNamedStats aws_iam_stats_mysql_global_rows(const AwsIamStatsSnapshot& stat
 	return backend_token_stats_mysql_global_rows(BackendTokenProvider::AWS_IAM, stats);
 }
 
-void initialize_aws_iam_prometheus_metrics(prometheus::Registry& registry) {
-	AwsIamPrometheusState& state = aws_iam_prometheus_state();
+void initialize_backend_token_prometheus_metrics(BackendTokenProvider provider, prometheus::Registry& registry) {
+	const size_t p = static_cast<size_t>(provider);
+	AwsIamPrometheusState& state = token_prometheus_state(provider);
 	std::lock_guard<std::mutex> lock(state.mutex);
 	if (state.registry == &registry) return;
 	// A ProxySQL process owns one registry for its lifetime. Supporting a new
@@ -260,24 +289,25 @@ void initialize_aws_iam_prometheus_metrics(prometheus::Registry& registry) {
 	state.registry = &registry;
 	state.counters.fill(nullptr);
 	state.gauges.fill(nullptr);
-	for (size_t i = 0; i < kAwsIamCounterNames.size(); ++i) {
+	const std::string help = kTokenMetricHelp[p];
+	for (size_t i = 0; i < kTokenCounterNames[p].size(); ++i) {
 		auto& family = prometheus::BuildCounter()
-			.Name(kAwsIamCounterNames[i])
-			.Help("ProxySQL AWS IAM backend authentication counter.")
+			.Name(kTokenCounterNames[p][i])
+			.Help(help + " counter.")
 			.Register(registry);
 		state.counters[i] = std::addressof(family.Add({}));
 	}
-	for (size_t i = 0; i < kAwsIamGaugeNames.size(); ++i) {
+	for (size_t i = 0; i < kTokenGaugeNames[p].size(); ++i) {
 		auto& family = prometheus::BuildGauge()
-			.Name(kAwsIamGaugeNames[i])
-			.Help("ProxySQL AWS IAM backend authentication gauge.")
+			.Name(kTokenGaugeNames[p][i])
+			.Help(help + " gauge.")
 			.Register(registry);
 		state.gauges[i] = std::addressof(family.Add({}));
 	}
 }
 
-void update_aws_iam_prometheus_metrics(const AwsIamStatsSnapshot& stats) {
-	AwsIamPrometheusState& state = aws_iam_prometheus_state();
+void update_backend_token_prometheus_metrics(BackendTokenProvider provider, const AwsIamStatsSnapshot& stats) {
+	AwsIamPrometheusState& state = token_prometheus_state(provider);
 	std::lock_guard<std::mutex> lock(state.mutex);
 	if (state.registry == nullptr) return;
 	const auto counters = aws_iam_counter_values(stats);
@@ -291,6 +321,14 @@ void update_aws_iam_prometheus_metrics(const AwsIamStatsSnapshot& stats) {
 	for (size_t i = 0; i < gauges.size(); ++i) {
 		state.gauges[i]->Set(static_cast<double>(gauges[i]));
 	}
+}
+
+void initialize_aws_iam_prometheus_metrics(prometheus::Registry& registry) {
+	initialize_backend_token_prometheus_metrics(BackendTokenProvider::AWS_IAM, registry);
+}
+
+void update_aws_iam_prometheus_metrics(const AwsIamStatsSnapshot& stats) {
+	update_backend_token_prometheus_metrics(BackendTokenProvider::AWS_IAM, stats);
 }
 
 void AwsIamTokenSourceLease::release() {
@@ -339,7 +377,7 @@ void publish_global_backend_token_source(BackendTokenProvider provider, AwsIamTo
 		proxy_warning("Refusing to replace the plugin-owned %s token source\n", slot_name(slot));
 		return;
 	}
-	init_aws_metrics(slot, source);
+	init_slot_metrics(slot, source);
 	slot.leased = source;
 	slot.accepting = source != nullptr;
 	set_aws_global(slot, source);
@@ -356,7 +394,7 @@ bool install_global_backend_token_source(BackendTokenProvider provider, AwsIamTo
 		slot.installed.source != nullptr) {
 		return false;
 	}
-	init_aws_metrics(slot, source);
+	init_slot_metrics(slot, source);
 	slot.installed.source = std::unique_ptr<AwsIamTokenSource, AwsIamTokenSourceDestroyer>(
 		source, AwsIamTokenSourceDestroyer{destroy});
 	slot.installed.module_handle = module_handle;
