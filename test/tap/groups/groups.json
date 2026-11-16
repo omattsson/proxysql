@@ -622,6 +622,7 @@
   "test_auto_increment_delay_multiplex-t" : [ "mysql-auto_increment_delay_multiplex=0-g2","mysql-multiplexing=false-g2","mysql-query_digests=0-g2","mysql-query_digests_keep_comment=1-g2","mysql57-core-g2","mysql84-g7","mysql90-g2","mysql95-g2" ],
   "test_aws_iam_backend_auth-t" : [ "unit-tests-g1","@proxysql_min_version:4.0" ],
   "test_aws_iam_metrics-t" : [ "unit-tests-g1","@proxysql_min_version:4.0" ],
+  "test_azure_entra_backend_auth-t" : [ "mysql84-g5","mysql90-g5","mysql95-g5","@proxysql_min_version:4.0" ],
   "test_backend_conn_ping-t" : [ "mysql-auto_increment_delay_multiplex=0-g2","mysql-multiplexing=false-g2","mysql-query_digests=0-g2","mysql-query_digests_keep_comment=1-g2","mysql57-core-g2","mysql84-g7","mysql90-g2","mysql95-g2" ],
   "test_binlog_dump_multi_backend_crash-t" : [ "legacy-binlog-g1" ],
   "test_binlog_fast_forward-t" : [ "legacy-binlog-g1","mysql84-binlog-g2","mysql90-binlog-g2","mysql95-binlog-g2" ],
