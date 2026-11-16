@@ -85,4 +85,16 @@ struct AwsIamConnectionConfigResult {
 AwsIamConnectionConfigResult validate_mysql_aws_iam_connection(
 	const AwsIamConnectionConfigInput& input);
 
+/**
+ * @brief Validate a backend connection for 'azure_entra' (#6649).
+ * @details Same rules as AWS IAM (TCP, TLS, CA trust) but no region; the endpoint
+ *   must be an Azure Database for MySQL host name. The key has an empty region.
+ */
+AwsIamConnectionConfigResult validate_mysql_azure_entra_connection(
+	const AwsIamConnectionConfigInput& input);
+
+/** @brief Validate for the given token type; a non-token type gets "not_token_auth". */
+AwsIamConnectionConfigResult validate_mysql_backend_token_connection(
+	MySQLBackendAuthType type, const AwsIamConnectionConfigInput& input);
+
 #endif // MYSQL_BACKEND_AUTH_H

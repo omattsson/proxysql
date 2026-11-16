@@ -59,6 +59,11 @@ void test_valid_rds_endpoint_shapes() {
 		"ISO RDS endpoint is accepted");
 	ok_status(valid_input("instance.abcdef.us-isob-east-1.rds.sc2s.sgov.gov", "us-isob-east-1"),
 		"ISOB RDS endpoint is accepted");
+	// DNS names are case-insensitive (#6649 keeps both token types consistent).
+	ok_status(valid_input("DB.cluster-x.us-east-1.RDS.amazonaws.com", "us-east-1"),
+		"upper-case RDS endpoint is accepted");
+	ok_status(valid_input("db.cluster-x.us-east-1.rds.amazonaws.com", "US-EAST-1"),
+		"upper-case region matches the endpoint region");
 }
 
 void test_validation_failures() {
