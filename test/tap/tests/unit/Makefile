@@ -743,7 +743,7 @@ UNIT_TESTS += aws_iam_policy_unit-t aws_iam_connection_config_unit-t \
 	mysql_backend_auth_in_use_unit-t
 # Azure Entra backend authentication (#6649), also PROXYSQL40 only.
 UNIT_TESTS += azure_entra_policy_unit-t azure_entra_connection_config_unit-t \
-	backend_token_slot_unit-t
+	backend_token_slot_unit-t azure_entra_plugin_unit-t
 # mysqlx + plugin + test_mysqlx unit tests: always built under PROXYSQL40=1.
 UNIT_TESTS += \
 	managed_configuration_contract_unit-t \
@@ -982,6 +982,16 @@ mysql_router_plugin_load_unit-t: mysql_router_plugin_load_unit-t.cpp $(ODIR)/tap
 mysql_router_admin_schema_unit-t: mysql_router_admin_schema_unit-t.cpp $(ODIR)/tap.o $(ODIR)/test_globals.o $(ODIR)/test_init.o $(LIBPROXYSQLAR) mysql_router_plugin_build $(STAGED_LIBPROXYSQLSO)
 	$(CXX) $< $(ODIR)/tap.o $(ODIR)/test_globals.o $(ODIR)/test_init.o \
 		-DPROXYSQL_MYSQL_ROUTER_PLUGIN_PATH=\"$(MYSQL_ROUTER_PLUGIN_SO)\" \
+		$(IDIRS) $(LDIRS) $(OPT) $(WHOLE_LIBPROXYSQL) $(STATIC_LIBS) \
+		$(MYLIBS) -ldl $(ALLOW_MULTI_DEF) -lpthread -o $@
+
+# Azure Entra provider plugin (#6649): plugin sources are compiled into the test.
+AZURE_ENTRA_PLUGIN_SRCS := $(PROXYSQL_PATH)/plugins/azure_entra/src/entra_config.cpp \
+	$(PROXYSQL_PATH)/plugins/azure_entra/src/entra_exchange.cpp
+azure_entra_plugin_unit-t: azure_entra_plugin_unit-t.cpp $(AZURE_ENTRA_PLUGIN_SRCS) $(ODIR)/tap.o $(ODIR)/test_globals.o $(ODIR)/test_init.o $(LIBPROXYSQLAR) $(STAGED_LIBPROXYSQLSO)
+	$(CXX) $< $(AZURE_ENTRA_PLUGIN_SRCS) \
+		$(ODIR)/tap.o $(ODIR)/test_globals.o $(ODIR)/test_init.o \
+		-I$(PROXYSQL_PATH)/plugins/azure_entra/include \
 		$(IDIRS) $(LDIRS) $(OPT) $(WHOLE_LIBPROXYSQL) $(STATIC_LIBS) \
 		$(MYLIBS) -ldl $(ALLOW_MULTI_DEF) -lpthread -o $@
 
