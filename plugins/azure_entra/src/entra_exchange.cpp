@@ -81,7 +81,8 @@ EntraTokenResponse exchange_workload_identity(const EntraConfig& cfg,
 	}
 	EntraTokenResponse r;
 	r.ok = true;
-	r.access_token = SecureString(token);
+	// Core's OPENSSL_cleanse: the token can outlive this plugin (Aws_Iam_Provider.h).
+	r.access_token = SecureString(token, &OPENSSL_cleanse);
 	r.expires_in = std::chrono::seconds(expires);
 	cleanse(token);
 	return r;

@@ -45,8 +45,11 @@ else
 	PLUGIN_LDFLAGS += -Wl,--version-script=$(PLUGIN_DIR)/exports.map
 endif
 
-SRCS := $(PLUGIN_DIR)/src/entra_config.cpp \
-	$(PLUGIN_DIR)/src/entra_exchange.cpp
+SRCS := $(PLUGIN_DIR)/src/plugin.cpp \
+	$(PLUGIN_DIR)/src/entra_config.cpp \
+	$(PLUGIN_DIR)/src/entra_exchange.cpp \
+	$(PLUGIN_DIR)/src/entra_token_source.cpp \
+	$(PLUGIN_DIR)/src/curl_transport.cpp
 HEADERS := $(wildcard $(PLUGIN_DIR)/include/*.h) \
 	$(PROXYSQL_PATH)/include/ProxySQL_Plugin.h \
 	$(PROXYSQL_PATH)/include/Aws_Iam_Provider.h \
