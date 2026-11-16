@@ -325,7 +325,7 @@ KillArgs::KillArgs(char* u, char* p, char* h, unsigned int P,
 	const char *endpoint, const char *aws_region, const char *db_user,
 	std::chrono::steady_clock::time_point deadline) {
 	username=u ? strdup(u) : nullptr;
-	password=auth_type == MySQLBackendAuthType::AWS_IAM
+	password=mysql_backend_auth_uses_token(auth_type)
 		? nullptr : (p ? strdup(p) : nullptr);
 	hostname=h ? strdup(h) : nullptr;
 	ip_addr = NULL;
@@ -383,8 +383,7 @@ static void cleanse_iam_connector_password(MYSQL *mysql) {
 void* kill_query_thread(void *arg) {
 	KillArgs *ka=(KillArgs *)arg;
 #ifdef PROXYSQL40
-	const bool iam_mode =
-		ka->backend_auth_type == MySQLBackendAuthType::AWS_IAM;
+	const bool iam_mode = mysql_backend_auth_uses_token(ka->backend_auth_type);
 	AwsIamTokenResult iam_result;
 	AwsIamTokenSourceLease iam_source;
 #else
@@ -429,7 +428,9 @@ void* kill_query_thread(void *arg) {
 
 #ifdef PROXYSQL40
 	if (iam_mode) {
-		iam_source = acquire_global_aws_iam_token_source();
+		BackendTokenProvider provider = BackendTokenProvider::AWS_IAM;
+		backend_token_provider_for(ka->backend_auth_type, provider);
+		iam_source = acquire_backend_token_source(provider);
 		AwsIamConnectionConfigInput input;
 		input.database_user = ka->database_user;
 		input.configured_endpoint = ka->configured_endpoint;
@@ -444,13 +445,13 @@ void* kill_query_thread(void *arg) {
 			: (mysql_thread___ssl_p2s_capath != nullptr ? mysql_thread___ssl_p2s_capath : "");
 		input.support_compiled = iam_source && iam_source->support_compiled();
 		const AwsIamConnectionConfigResult config =
-			validate_mysql_aws_iam_connection(input);
+			validate_mysql_backend_token_connection(ka->backend_auth_type, input);
 		if (config.status != AwsIamConnectionConfigStatus::OK ||
 			!iam_source) {
 			proxy_error(
-				"AWS IAM kill helper failure user='%s' hostgroup=%u endpoint='%s'"
+				"%s kill helper failure user='%s' hostgroup=%u endpoint='%s'"
 				" region='%s' category='%s' code='' request_id=''\n",
-				ka->database_user.c_str(), ka->hid,
+				backend_token_log_label(ka->backend_auth_type), ka->database_user.c_str(), ka->hid,
 				ka->configured_endpoint.c_str(), ka->region.c_str(),
 				!iam_source
 					? "token_source_unavailable" : config.failure_code.c_str());
@@ -461,9 +462,9 @@ void* kill_query_thread(void *arg) {
 			config.key, ka->token_deadline);
 		if (iam_result.status != AwsIamStatus::OK || iam_result.token.empty()) {
 			proxy_error(
-				"AWS IAM kill helper failure user='%s' hostgroup=%u endpoint='%s'"
+				"%s kill helper failure user='%s' hostgroup=%u endpoint='%s'"
 				" region='%s' category='%s' code='%s' request_id='%s'\n",
-				ka->database_user.c_str(), ka->hid,
+				backend_token_log_label(ka->backend_auth_type), ka->database_user.c_str(), ka->hid,
 				ka->configured_endpoint.c_str(), ka->region.c_str(),
 				iam_result.failure.category.empty()
 					? "token_request_failed" : iam_result.failure.category.c_str(),
@@ -477,9 +478,9 @@ void* kill_query_thread(void *arg) {
 			std::chrono::duration_cast<std::chrono::seconds>(remaining).count();
 		if (connect_timeout_seconds <= 0) {
 			proxy_error(
-				"AWS IAM kill helper failure user='%s' hostgroup=%u endpoint='%s'"
+				"%s kill helper failure user='%s' hostgroup=%u endpoint='%s'"
 				" region='%s' category='helper_deadline_exceeded' code='' request_id=''\n",
-				ka->database_user.c_str(), ka->hid,
+				backend_token_log_label(ka->backend_auth_type), ka->database_user.c_str(), ka->hid,
 				ka->configured_endpoint.c_str(), ka->region.c_str());
 			goto __exit_kill_query_thread;
 		}
@@ -546,9 +547,9 @@ void* kill_query_thread(void *arg) {
 		int myerr = mysql_errno(mysql);
 		if (iam_mode) {
 			proxy_error(
-				"AWS IAM kill helper failure user='%s' hostgroup=%u endpoint='%s'"
+				"%s kill helper failure user='%s' hostgroup=%u endpoint='%s'"
 				" region='%s' category='backend_connect' code='' request_id=''\n",
-				ka->database_user.c_str(), ka->hid,
+				backend_token_log_label(ka->backend_auth_type), ka->database_user.c_str(), ka->hid,
 				ka->configured_endpoint.c_str(), ka->region.c_str());
 		} else if (ssl_params != NULL && myerr == 2026) {
 			proxy_error("Failed to connect to server %s:%d to run KILL %s %lu.  SSL Params: %s , %s , %s , %s , %s , %s , %s , %s\n",
@@ -2841,7 +2842,7 @@ void MySQL_Session::handler_again___new_thread_to_kill_connection() {
 			MySQL_Connection *connection = myds->myconn;
 			KillArgs *ka = nullptr;
 #ifdef PROXYSQL40
-			if (connection->backend_auth_type() == MySQLBackendAuthType::AWS_IAM) {
+			if (mysql_backend_auth_uses_token(connection->backend_auth_type())) {
 				const char *database_user = connection->userinfo != nullptr &&
 					connection->userinfo->username != nullptr
 						? connection->userinfo->username : "";
@@ -2853,7 +2854,7 @@ void MySQL_Session::handler_again___new_thread_to_kill_connection() {
 					connection->parent->myhgc->hid, connection->mysql->thread_id,
 					KILL_QUERY, connection->parent->use_ssl, thread,
 					connection->connected_host_details.ip,
-					MySQLBackendAuthType::AWS_IAM, connection->parent->address,
+					connection->backend_auth_type(), connection->parent->address,
 					region, database_user,
 					std::chrono::steady_clock::now() + std::chrono::seconds(5));
 			} else

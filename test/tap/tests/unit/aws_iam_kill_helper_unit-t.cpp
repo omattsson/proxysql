@@ -256,6 +256,47 @@ void test_password_mode_unchanged(FakeBlockingTokenSource& source) {
 		"password-mode kill helpers retain their existing password connector behavior");
 }
 
+// #6649: an Azure Entra kill helper gets its token from the Azure slot.
+constexpr const char *kEntraEndpoint = "app.mysql.database.azure.com";
+
+OwnedKillArgs entra_args(const char *password) {
+	auto username = make_owned_cstr(kDatabaseUser);
+	OwnedCStr pw = password != nullptr ? make_owned_cstr(password) : OwnedCStr(nullptr, std::free);
+	auto endpoint = make_owned_cstr(kEntraEndpoint);
+	auto transport = make_owned_cstr(kTransportIp);
+	auto args = OwnedKillArgs(new KillArgs(
+		username.get(), pw.get(),
+		endpoint.get(), 3306, kHostgroup, 555, KILL_QUERY, 1,
+		nullptr, transport.get(), MySQLBackendAuthType::AZURE_ENTRA,
+		kEntraEndpoint, "", kDatabaseUser, Clock::now() + std::chrono::seconds(2)));
+	username.release();
+	pw.release();
+	endpoint.release();
+	transport.release();
+	return args;
+}
+
+void test_entra_kill_args_no_password() {
+	auto args = entra_args("frontend-password");
+	ok(args->password == nullptr,
+		"entra_kill_args_no_password: KillArgs drops a password for AZURE_ENTRA");
+}
+
+void test_entra_kill_thread_uses_token(FakeBlockingTokenSource& aws, FakeBlockingTokenSource& azure) {
+	reset_observations("ENTRA_KILL_TOKEN");
+	azure.status = AwsIamStatus::OK;
+	azure.next_token = "ENTRA_KILL_TOKEN";
+	const size_t aws_before = aws.keys.size();
+	const size_t azure_before = azure.keys.size();
+	kill_query_thread(entra_args(nullptr).release());
+	const AwsIamTokenKey expected_key { kEntraEndpoint, 3306, "", kDatabaseUser };
+	ok(aws.keys.size() == aws_before && azure.keys.size() == azure_before + 1 &&
+		azure.keys.back() == expected_key && connector.connect_calls == 1 &&
+		connector.password_matches && connector.cleartext && connector.ssl_verify &&
+		connector.tls_server_name == kEntraEndpoint && connector.query == "KILL QUERY 555",
+		"entra_kill_thread_uses_token: the Entra helper uses the Azure slot token over verified TLS");
+}
+
 void test_helper_shutdown_lifetime(FakeBlockingTokenSource& source) {
 	reset_observations(kQueryToken);
 	source.status = AwsIamStatus::OK;
@@ -398,7 +439,7 @@ void __wrap_mysql_close(MYSQL *mysql) {
 } // extern "C"
 
 int main() {
-	plan(15);
+	plan(17);
 	if (test_init_minimal() != 0 || test_init_query_processor() != 0 ||
 		test_init_hostgroups() != 0) {
 		BAIL_OUT("failed to initialize unit-test globals");
@@ -418,6 +459,13 @@ int main() {
 	test_helper_deadline(source);
 	test_deadline_expiring_during_token_request(source);
 	test_password_mode_unchanged(source);
+	{
+		FakeBlockingTokenSource azure;
+		publish_global_backend_token_source(BackendTokenProvider::AZURE_ENTRA, &azure);
+		test_entra_kill_args_no_password();
+		test_entra_kill_thread_uses_token(source, azure);
+		publish_global_backend_token_source(BackendTokenProvider::AZURE_ENTRA, nullptr);
+	}
 	test_helper_shutdown_lifetime(source);
 
 	logger.reset();

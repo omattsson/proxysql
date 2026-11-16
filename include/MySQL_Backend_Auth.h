@@ -19,6 +19,9 @@ enum class MySQLBackendAuthType : uint8_t {
 /** @brief Whether the type authenticates with a short-lived token instead of a password. */
 bool mysql_backend_auth_uses_token(MySQLBackendAuthType type);
 
+/** @brief "AWS IAM" or "Azure Entra" for log and error text; AWS text stays as before #6649. */
+const char* backend_token_log_label(MySQLBackendAuthType type);
+
 /** @brief The token-source slot of a token type; false for PASSWORD and INVALID. */
 bool backend_token_provider_for(MySQLBackendAuthType type, BackendTokenProvider& out);
 

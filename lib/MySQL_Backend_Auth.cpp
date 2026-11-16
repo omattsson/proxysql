@@ -218,6 +218,10 @@ bool mysql_backend_auth_uses_token(MySQLBackendAuthType type) {
 	return type == MySQLBackendAuthType::AWS_IAM || type == MySQLBackendAuthType::AZURE_ENTRA;
 }
 
+const char* backend_token_log_label(MySQLBackendAuthType type) {
+	return type == MySQLBackendAuthType::AZURE_ENTRA ? "Azure Entra" : "AWS IAM";
+}
+
 bool backend_token_provider_for(MySQLBackendAuthType type, BackendTokenProvider& out) {
 	switch (type) {
 		case MySQLBackendAuthType::AWS_IAM:

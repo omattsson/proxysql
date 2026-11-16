@@ -719,6 +719,69 @@ void test_destroy_path_dispatches_detached_iam_connection_kill() {
 		"production destroy dispatches an IAM KILL_CONNECTION helper without changing the source token or entering reset");
 }
 
+// #6649: an Azure Entra connection follows the same token rules as AWS IAM.
+void test_entra_conn_not_reset_queued() {
+	MySrvC *server = create_server(850, "app.mysql.database.azure.com");
+	GloMTH->variables.connpoll_reset_queue_length = 50;
+	auto entra = create_established_connection(
+		server, kUser, MySQLBackendAuthType::AZURE_ENTRA);
+	auto entra_ptr = entra.get();
+	entra->send_quit = true;
+	server->ConnectionsUsed->add(entra.release());
+	MyHGM->destroy_MyConn_from_pool(entra_ptr);
+	ok(MyHGM->queue.size() == 0 && server->ConnectionsUsed->conns_length() == 0,
+		"entra_conn_not_reset_queued: destroy deletes an Entra connection, no COM_CHANGE_USER reset");
+}
+
+void test_entra_conn_keeps_identity() {
+	MySrvC *server = create_server(851, "app851.mysql.database.azure.com");
+	auto entra = create_established_connection(
+		server, kUser, MySQLBackendAuthType::AZURE_ENTRA);
+	AwsIamTokenResult token;
+	token.status = AwsIamStatus::OK;
+	token.generation = 3;
+	token.token = SecureString("ENTRA_HANDSHAKE_TOKEN");
+	entra->attach_aws_iam_token({ server->address, server->port, "", kUser }, std::move(token));
+	entra->set_backend_auth_type(MySQLBackendAuthType::AZURE_ENTRA);
+	ok(entra->has_aws_iam_handshake_secret(),
+		"entra_conn_keeps_identity: setting AZURE_ENTRA keeps the attached token");
+}
+
+void test_entra_kill_args_type() {
+	MySrvC *server = create_server(852, "app852.mysql.database.azure.com");
+	server->use_ssl = 1;
+	GloMTH->variables.connpoll_reset_queue_length = 50;
+	mysql_thread___kill_backend_connection_when_disconnect = true;
+	auto entra = create_established_connection(
+		server, kUser, MySQLBackendAuthType::AZURE_ENTRA);
+	auto entra_ptr = entra.get();
+	AwsIamTokenResult token;
+	token.status = AwsIamStatus::OK;
+	token.generation = 5;
+	token.token = SecureString("ENTRA_HANDSHAKE_TOKEN");
+	entra->attach_aws_iam_token({ server->address, server->port, "", kUser }, std::move(token));
+	entra->send_quit = true;
+	entra->async_state_machine = ASYNC_QUERY_CONT;
+	entra->mysql->thread_id = 742;
+	entra->connected_host_details.ip = make_owned_cstring("198.51.100.29").release();
+	server->ConnectionsUsed->add(entra.release());
+
+	kill_source_connection = entra_ptr;
+	kill_helper_dispatches = 0;
+	kill_args_password_absent = false;
+	kill_args_auth_type = MySQLBackendAuthType::PASSWORD;
+	kill_args_endpoint.clear();
+	kill_args_region.clear();
+	MyHGM->destroy_MyConn_from_pool(entra_ptr);
+	kill_source_connection = nullptr;
+	mysql_thread___kill_backend_connection_when_disconnect = false;
+	ok(kill_helper_dispatches == 1 && kill_args_password_absent &&
+		kill_args_auth_type == MySQLBackendAuthType::AZURE_ENTRA &&
+		kill_args_endpoint == "app852.mysql.database.azure.com" && kill_args_region.empty() &&
+		MyHGM->queue.size() == 0,
+		"entra_kill_args_type: an Entra KILL_CONNECTION helper carries AZURE_ENTRA and no password");
+}
+
 void test_reset_queue_worker_never_changes_iam() {
 	MySrvC *server = create_server(808, "reset-worker-iam");
 	auto iam = create_established_connection(
@@ -974,7 +1037,7 @@ int main() {
 	skip(1, "requires GNU ld --wrap support");
 	return exit_status();
 #else
-	plan(45);
+	plan(48);
 	if (test_init_minimal() != 0 || test_init_auth() != 0 ||
 		test_init_query_processor() != 0 ||
 		test_init_hostgroups() != 0) {
@@ -1025,6 +1088,9 @@ int main() {
 		test_rowless_password_can_enter_detached_reset(worker); // 1
 		test_destroy_path_never_queues_iam();     // 2
 		test_destroy_path_dispatches_detached_iam_connection_kill(); // 1
+		test_entra_conn_not_reset_queued();       // 1
+		test_entra_conn_keeps_identity();         // 1
+		test_entra_kill_args_type();              // 1
 		test_reset_queue_worker_never_changes_iam(); // 1
 		test_reset_queue_worker_never_resets_invalid_policy(); // 1
 		test_reset_queue_worker_resets_rowless_password(); // 1
