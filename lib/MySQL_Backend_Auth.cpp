@@ -177,8 +177,14 @@ const char* mysql_backend_auth_type_name(MySQLBackendAuthType type) {
 			return "aws_iam";
 		case MySQLBackendAuthType::INVALID:
 			return "invalid";
+		case MySQLBackendAuthType::AZURE_ENTRA:
+			return "azure_entra";
 	}
 	return "invalid";
+}
+
+bool mysql_backend_auth_uses_token(MySQLBackendAuthType type) {
+	return type == MySQLBackendAuthType::AWS_IAM || type == MySQLBackendAuthType::AZURE_ENTRA;
 }
 
 MySQLBackendAuthPolicy parse_mysql_backend_auth_policy(
@@ -222,11 +228,14 @@ MySQLBackendAuthPolicy parse_mysql_backend_auth_policy(
 	if (!type->is_string()) {
 		return invalid_backend_auth_policy(database_user, "type_not_string");
 	}
-	if (type->get<std::string>() != "aws_iam") {
+	const std::string& type_name = type->get_ref<const std::string&>();
+	if (type_name == "aws_iam") {
+		policy.type = MySQLBackendAuthType::AWS_IAM;
+	} else if (type_name == "azure_entra") {
+		policy.type = MySQLBackendAuthType::AZURE_ENTRA;
+	} else {
 		return invalid_backend_auth_policy(database_user, "type_unsupported");
 	}
-
-	policy.type = MySQLBackendAuthType::AWS_IAM;
 	policy.ignored_password = backend_password_is_nonempty;
 	return policy;
 }

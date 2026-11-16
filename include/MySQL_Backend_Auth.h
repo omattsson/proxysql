@@ -13,7 +13,11 @@ enum class MySQLBackendAuthType : uint8_t {
 	PASSWORD,
 	AWS_IAM,
 	INVALID,
+	AZURE_ENTRA, // after INVALID so existing values keep their numbers (#6649)
 };
+
+/** @brief Whether the type authenticates with a short-lived token instead of a password. */
+bool mysql_backend_auth_uses_token(MySQLBackendAuthType type);
 
 struct MySQLBackendAuthPolicy {
 	MySQLBackendAuthType type{MySQLBackendAuthType::INVALID};

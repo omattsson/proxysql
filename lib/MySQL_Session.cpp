@@ -932,6 +932,11 @@ const MySQLBackendAuthPolicy& MySQL_Session::backend_auth_policy_for(const char 
 	const char *user = backend_username != nullptr ? backend_username : "";
 	if (!cached_backend_auth_policy_valid || cached_backend_auth_policy_user != user) {
 		cached_backend_auth_policy = resolve_mysql_backend_auth_policy(*GloMyAuth, backend_username);
+		// shortcut: sessions do not route azure_entra yet, so fail closed; removed when they do (#6649 Task 4b).
+		if (cached_backend_auth_policy.type == MySQLBackendAuthType::AZURE_ENTRA) {
+			cached_backend_auth_policy.type = MySQLBackendAuthType::INVALID;
+			cached_backend_auth_policy.failure_code = "azure_entra_not_routed";
+		}
 		cached_backend_auth_policy_user = user;
 		cached_backend_auth_policy_valid = true;
 	}
