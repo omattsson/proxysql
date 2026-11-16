@@ -403,17 +403,6 @@ void test_policy_cached_for_session(MySQL_Thread& worker) {
 	add_backend_user(kPasswordUser, "ordinary-password", "");
 }
 
-// #6649: until sessions route azure_entra to a token source, an Entra user must
-// fail closed like a malformed policy, never fall back to sending a password.
-void test_entra_policy_fails_closed_until_routed(MySQL_Thread& worker) {
-	static constexpr const char *kEntraUser = "entra_user";
-	add_backend_user(kEntraUser, "", "{\"backend_auth\":{\"type\":\"azure_entra\"}}");
-	SessionFixture fixture(worker, kEntraUser);
-	const MySQLBackendAuthPolicy& policy = fixture.session->backend_auth_policy_for(kEntraUser);
-	ok(policy.type == MySQLBackendAuthType::INVALID && policy.failure_code == "azure_entra_not_routed",
-		"an azure_entra session fails closed until routing exists");
-}
-
 // While no backend row uses IAM, backend_auth_policy_for() skips the policy
 // lookup. The PASSWORD decision must still stick to the session: a later
 // LOAD MYSQL USERS that gives its user IAM applies to new client connections.
@@ -851,7 +840,7 @@ int __wrap_mysql_real_connect_start(MYSQL **ret, MYSQL *mysql, const char *host,
 } // extern "C"
 
 int main() {
-	plan(40);
+	plan(39);
 	if (test_init_minimal() != 0 || test_init_auth() != 0 ||
 		test_init_query_processor() != 0 || test_init_hostgroups() != 0) {
 		BAIL_OUT("failed to initialize unit-test globals");
@@ -894,7 +883,6 @@ int main() {
 		test_frontend_disconnect(worker);
 		test_late_completion_is_dropped(worker);
 		test_policy_cached_for_session(worker);
-		test_entra_policy_fails_closed_until_routed(worker);
 		test_password_decision_kept_when_iam_is_loaded(worker);
 		test_iam_decision_kept_when_iam_is_removed(worker);
 		test_shutdown_completion(worker);

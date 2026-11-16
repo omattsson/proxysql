@@ -53,6 +53,11 @@ constexpr const char *kBackendText =
 	"backend reflected AKIAFAKEACCESSKEY and FAKE_SESSION_TOKEN";
 MySrvC *failure_server = nullptr;
 std::atomic<bool> blocking_source_destroyed { false };
+// #6649: an Azure Entra user on an Azure host, in its own hostgroup.
+constexpr int kEntraHostgroup = 910;
+constexpr const char *kEntraEndpoint = "failure-entra.mysql.database.azure.com";
+constexpr const char *kEntraUser = "entra_failure_backend";
+MySrvC *entra_server = nullptr;
 
 struct ConnectOutcome {
 	unsigned int error;
@@ -179,10 +184,12 @@ void mark_blocking_source_destroyed(AwsIamTokenSource *) {
 
 class ScopedPublishedTokenSource {
 public:
-	explicit ScopedPublishedTokenSource(AwsIamTokenSource *source) {
-		publish_global_aws_iam_token_source(source);
+	explicit ScopedPublishedTokenSource(AwsIamTokenSource *source,
+		BackendTokenProvider provider = BackendTokenProvider::AWS_IAM) : provider_(provider) {
+		publish_global_backend_token_source(provider_, source);
 	}
-	~ScopedPublishedTokenSource() { publish_global_aws_iam_token_source(nullptr); }
+	~ScopedPublishedTokenSource() { publish_global_backend_token_source(provider_, nullptr); }
+	BackendTokenProvider provider_;
 
 	ScopedPublishedTokenSource(const ScopedPublishedTokenSource&) = delete;
 	ScopedPublishedTokenSource& operator=(const ScopedPublishedTokenSource&) = delete;
@@ -218,6 +225,44 @@ void add_server() {
 	free(hostgroup->attributes.aws_iam_region);
 	hostgroup->attributes.aws_iam_region = strdup(kRegion);
 	failure_server = hostgroup->mysrvs->idx(0);
+}
+
+void add_entra_server() {
+	srv_info_t info;
+	info.addr = kEntraEndpoint;
+	info.port = 3306;
+	info.kind = "azure-entra-failure-unit";
+	srv_opts_t opts;
+	opts.weigth = 1;
+	opts.max_conns = 100;
+	opts.use_ssl = 1;
+	MyHGM->wrlock();
+	const int rc = MyHGM->create_new_server_in_hg(kEntraHostgroup, info, opts);
+	MyHGC *hostgroup = MyHGM->MyHGC_find(kEntraHostgroup);
+	MyHGM->wrunlock();
+	if (rc != 0 || hostgroup == nullptr) BAIL_OUT("failed to create Entra failure fixture");
+	entra_server = hostgroup->mysrvs->idx(0);
+}
+
+MySQL_Connection *established_connection(MySrvC *server, const char *user,
+	MySQLBackendAuthType type, int fd) {
+	MySQL_Connection *connection = new MySQL_Connection();
+	connection->mysql = mysql_init(nullptr);
+	if (connection->mysql == nullptr) BAIL_OUT("mysql_init() failed for Entra fixture");
+	connection->ret_mysql = connection->mysql;
+	connection->mysql->charset = mariadb_get_charset_by_name("utf8mb4");
+	connection->parent = server;
+	std::string username = user;
+	char password[] = "ordinary-password";
+	std::string schema = "orders";
+	connection->userinfo->set(&username[0], password, &schema[0], nullptr);
+	connection->set_backend_auth_type(type);
+	connection->healthy = true;
+	connection->reusable = true;
+	connection->send_quit = false;
+	connection->fd = fd;
+	connection->async_state_machine = ASYNC_IDLE;
+	return connection;
 }
 
 MySQL_Connection *established_iam_connection(int fd) {
@@ -270,7 +315,8 @@ std::string capture_stderr(const std::function<void()>& action) {
 
 class SessionFixture {
 public:
-	SessionFixture(MySQL_Thread& worker, const char *username) : worker_(worker) {
+	SessionFixture(MySQL_Thread& worker, const char *username, int hostgroup = kHostgroup)
+		: worker_(worker) {
 		session = new MySQL_Session();
 		session->thread = &worker_;
 		session->connections_handler = true;
@@ -286,9 +332,9 @@ public:
 		frontend->userinfo->set(
 			&frontend_user[0], &frontend_password[0], &frontend_schema[0], nullptr);
 
-		session->mybe = session->create_backend(kHostgroup);
-		session->current_hostgroup = kHostgroup;
-		session->default_hostgroup = kHostgroup;
+		session->mybe = session->create_backend(hostgroup);
+		session->current_hostgroup = hostgroup;
+		session->default_hostgroup = hostgroup;
 		session->CurrentQuery.start_time = worker_.curtime;
 		session->previous_status.push(PROCESSING_QUERY);
 		session->set_status(CONNECTING_SERVER);
@@ -554,6 +600,109 @@ void test_provider_retirement_waits_for_1045_invalidation(MySQL_Thread& worker) 
 	delete source;
 }
 
+// ---- #6649: sessions route azure_entra to the Azure slot -------------------
+
+void test_entra_session_uses_azure_slot(MySQL_Thread& worker) {
+	FakeTokenSource aws, azure;
+	ScopedPublishedTokenSource published_aws(&aws);
+	ScopedPublishedTokenSource published_azure(&azure, BackendTokenProvider::AZURE_ENTRA);
+	reset_connector({});
+	SessionFixture fixture(worker, kEntraUser, kEntraHostgroup);
+	fixture.run();
+	const AwsIamTokenKey expected { kEntraEndpoint, 3306, "", kEntraUser };
+	ok(fixture.session->status == WAITING_AWS_IAM_TOKEN && aws.keys.empty() &&
+		azure.keys.size() == 1 && azure.keys[0] == expected && connector_calls == 0,
+		"entra_session_uses_azure_slot: an Entra session waits on the Azure slot only");
+	worker.drain_aws_iam_completions();
+}
+
+void test_entra_no_source_fails_closed(MySQL_Thread& worker) {
+	FakeTokenSource aws;
+	ScopedPublishedTokenSource published_aws(&aws);
+	reset_connector({});
+	client_error_code = 0;
+	SessionFixture fixture(worker, kEntraUser, kEntraHostgroup);
+	const std::string log = capture_stderr([&fixture] { fixture.run(); });
+	ok(fixture.session->status == WAITING_CLIENT_DATA && connector_calls == 0 &&
+		aws.keys.empty() && client_error_code == 9002 &&
+		log.find("Azure Entra backend token failure") != std::string::npos &&
+		log.find("category='token_source_unavailable'") != std::string::npos,
+		"entra_no_source_fails_closed: no Azure source means ERR 9002 and no connect attempt");
+}
+
+void test_entra_1045_invalidates_once(MySQL_Thread& worker) {
+	FakeTokenSource azure;
+	ScopedPublishedTokenSource published_azure(&azure, BackendTokenProvider::AZURE_ENTRA);
+	reset_connector({ { ER_ACCESS_DENIED_ERROR, kBackendText, false },
+		{ ER_ACCESS_DENIED_ERROR, kBackendText, false } });
+	SessionFixture fixture(worker, kEntraUser, kEntraHostgroup);
+	fixture.backend()->connect_retries_on_failure = 3;
+	start_iam_attempt(fixture, worker);
+	process_terminal_connect(fixture);
+	const bool retried = azure.invalidated_generations.size() == 1 &&
+		azure.keys.size() == 2 && fixture.session->status == WAITING_AWS_IAM_TOKEN;
+	std::string log;
+	if (retried) {
+		worker.drain_aws_iam_completions();
+		log = capture_stderr([&fixture] { fixture.run(); });
+	}
+	ok(retried && azure.keys.size() == 2 && azure.invalidated_generations.size() == 1 &&
+		fixture.session->status == WAITING_CLIENT_DATA &&
+		log.find("Azure Entra backend connection failure") != std::string::npos &&
+		log.find("category='backend_auth_rejected'") != std::string::npos &&
+		log.find("clock") == std::string::npos,
+		"entra_1045_invalidates_once: one invalidate, one fresh token, then terminal backend_auth_rejected");
+}
+
+void test_entra_retry_flag_reset_on_success(MySQL_Thread& worker) {
+	FakeTokenSource azure;
+	ScopedPublishedTokenSource published_azure(&azure, BackendTokenProvider::AZURE_ENTRA);
+	SessionFixture fixture(worker, kEntraUser, kEntraHostgroup);
+	MySQL_Connection *pooled = established_connection(
+		entra_server, kEntraUser, MySQLBackendAuthType::AZURE_ENTRA, 604);
+	entra_server->ConnectionsUsed->add(pooled);
+	fixture.backend()->attach_connection(pooled);
+	fixture.session->aws_iam_fresh_token_retry_attempted = true;
+	fixture.session->previous_status.pop();
+	fixture.session->previous_status.push(WAITING_CLIENT_DATA);
+	fixture.frontend_stream->active = 0;
+	fixture.backend()->active = 0;
+	fixture.run();
+	fixture.frontend_stream->active = 1;
+	fixture.backend()->active = 1;
+	ok(!fixture.session->aws_iam_fresh_token_retry_attempted,
+		"entra_retry_flag_reset_on_success: a successful Entra acquisition clears the retry latch");
+	fixture.backend()->destroy_MySQL_Connection_From_Pool(false);
+}
+
+void test_entra_change_user_destroys(MySQL_Thread& worker) {
+	FakeTokenSource azure;
+	ScopedPublishedTokenSource published_azure(&azure, BackendTokenProvider::AZURE_ENTRA);
+	SessionFixture fixture(worker, kEntraUser, kEntraHostgroup);
+	MySQL_Connection *pooled = established_connection(
+		entra_server, kPasswordUser, MySQLBackendAuthType::PASSWORD, 605);
+	entra_server->ConnectionsUsed->add(pooled);
+	fixture.backend()->attach_connection(pooled);
+	fixture.session->set_status(CHANGING_USER_SERVER);
+	fixture.run();
+	ok(fixture.backend()->myconn != pooled &&
+		entra_server->ConnectionsUsed->conns_length() <= 1 && azure.keys.size() == 1,
+		"entra_change_user_destroys: a password connection is replaced, never COM_CHANGE_USER'd to an Entra user");
+	worker.drain_aws_iam_completions();
+}
+
+void test_entra_reset_destroys(MySQL_Thread& worker) {
+	SessionFixture fixture(worker, kEntraUser, kEntraHostgroup);
+	MySQL_Connection *entra = established_connection(
+		entra_server, kEntraUser, MySQLBackendAuthType::AZURE_ENTRA, 606);
+	entra_server->ConnectionsUsed->add(entra);
+	fixture.backend()->attach_connection(entra);
+	const unsigned int sessions_before = worker.mysql_sessions->len;
+	fixture.session->create_new_session_and_reset_connection(fixture.backend());
+	ok(worker.mysql_sessions->len == sessions_before && fixture.backend()->myconn == nullptr,
+		"entra_reset_destroys: an Entra connection is destroyed, no reset session is created");
+}
+
 } // namespace
 
 extern "C" {
@@ -596,7 +745,7 @@ int __wrap_mysql_real_connect_start(MYSQL **ret, MYSQL *mysql, const char *host,
 } // extern "C"
 
 int main() {
-	plan(15);
+	plan(21);
 	if (test_init_minimal() != 0 || test_init_auth() != 0 ||
 		test_init_query_processor() != 0 || test_init_hostgroups() != 0) {
 		BAIL_OUT("failed to initialize unit-test globals");
@@ -605,10 +754,12 @@ int main() {
 	MySQL_Logger *previous_logger = GloMyLogger;
 	GloMyLogger = owned_logger.get();
 	if (!add_backend_user(kIamUser, "", "{\"backend_auth\":{\"type\":\"aws_iam\"}}") ||
-		!add_backend_user(kPasswordUser, "ordinary-password", "")) {
+		!add_backend_user(kPasswordUser, "ordinary-password", "") ||
+		!add_backend_user(kEntraUser, "", "{\"backend_auth\":{\"type\":\"azure_entra\"}}")) {
 		BAIL_OUT("failed to load backend user fixtures");
 	}
 	add_server();
+	add_entra_server();
 
 	{
 		MySQL_Thread worker;
@@ -628,6 +779,12 @@ int main() {
 		test_pooled_success_clears_latch_for_later_1045(worker);
 		test_missing_port_cannot_retry_or_invalidate(worker);
 		test_provider_retirement_waits_for_1045_invalidation(worker);
+		test_entra_session_uses_azure_slot(worker);
+		test_entra_no_source_fails_closed(worker);
+		test_entra_1045_invalidates_once(worker);
+		test_entra_retry_flag_reset_on_success(worker);
+		test_entra_change_user_destroys(worker);
+		test_entra_reset_destroys(worker);
 	}
 	GloAwsIamTokenSource = nullptr;
 

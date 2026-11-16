@@ -83,8 +83,10 @@ using json = nlohmann::json;
 #define SHOW_STATUS_LIKE_SSL_VERSION_LEN 29
 
 #ifdef PROXYSQL40
-static void record_aws_iam_backend_connection(bool success) {
-	AwsIamTokenSourceLease source = acquire_global_aws_iam_token_source();
+static void record_backend_token_connection(MySQLBackendAuthType type, bool success) {
+	BackendTokenProvider provider;
+	if (!backend_token_provider_for(type, provider)) return;
+	AwsIamTokenSourceLease source = acquire_backend_token_source(provider);
 	if (source) source->record_backend_connection(success);
 }
 #endif // PROXYSQL40
@@ -933,11 +935,6 @@ const MySQLBackendAuthPolicy& MySQL_Session::backend_auth_policy_for(const char 
 	const char *user = backend_username != nullptr ? backend_username : "";
 	if (!cached_backend_auth_policy_valid || cached_backend_auth_policy_user != user) {
 		cached_backend_auth_policy = resolve_mysql_backend_auth_policy(*GloMyAuth, backend_username);
-		// shortcut: sessions do not route azure_entra yet, so fail closed; removed when they do (#6649 Task 4b).
-		if (cached_backend_auth_policy.type == MySQLBackendAuthType::AZURE_ENTRA) {
-			cached_backend_auth_policy.type = MySQLBackendAuthType::INVALID;
-			cached_backend_auth_policy.failure_code = "azure_entra_not_routed";
-		}
 		cached_backend_auth_policy_user = user;
 		cached_backend_auth_policy_valid = true;
 	}
@@ -1006,9 +1003,9 @@ void MySQL_Session::fail_aws_iam_backend(
 		? provider_failure->request_id.c_str() : "";
 
 	proxy_error(
-		"AWS IAM backend token failure user='%s' hostgroup=%d endpoint='%s' region='%s'"
+		"%s backend token failure user='%s' hostgroup=%d endpoint='%s' region='%s'"
 		" category='%s' code='%s' request_id='%s'\n",
-		database_user.c_str(), current_hostgroup, endpoint.c_str(), region.c_str(),
+		backend_token_log_label(cached_backend_auth_policy.type), database_user.c_str(), current_hostgroup, endpoint.c_str(), region.c_str(),
 		category, aws_code, request_id);
 
 	MySQL_Data_Stream *backend = mybe != nullptr ? mybe->server_myds : nullptr;
@@ -4162,17 +4159,17 @@ bool MySQL_Session::handler_again___status_CONNECTING_SERVER(int *_rc) {
 #ifdef PROXYSQL40
 			MySQL_Connection *timed_out_connection = mybe->server_myds->myconn;
 			if (timed_out_connection != nullptr &&
-				timed_out_connection->backend_auth_type() == MySQLBackendAuthType::AWS_IAM) {
-				record_aws_iam_backend_connection(false);
+				mysql_backend_auth_uses_token(timed_out_connection->backend_auth_type())) {
+				record_backend_token_connection(timed_out_connection->backend_auth_type(), false);
 				const char *database_user = timed_out_connection->userinfo != nullptr &&
 					timed_out_connection->userinfo->username != nullptr
 						? timed_out_connection->userinfo->username : "";
 				const std::string region_copy = timed_out_connection->aws_iam_region();
 				const char *region = region_copy.c_str();
 				proxy_error(
-					"AWS IAM backend connection failure user='%s' hostgroup=%u endpoint='%s'"
+					"%s backend connection failure user='%s' hostgroup=%u endpoint='%s'"
 					" region='%s' category='backend_connect' code='timeout' request_id=''\n",
-					database_user, timed_out_connection->parent->myhgc->hid,
+					backend_token_log_label(timed_out_connection->backend_auth_type()), database_user, timed_out_connection->parent->myhgc->hid,
 					timed_out_connection->parent->address, region);
 				timed_out_connection->connect_cont(MYSQL_WAIT_TIMEOUT);
 				static const char generic_error[] = "Unable to connect to backend";
@@ -4273,8 +4270,7 @@ bool MySQL_Session::handler_again___status_CONNECTING_SERVER(int *_rc) {
 		enum session_status st=status;
 		if (mybe->server_myds->myconn->async_state_machine==ASYNC_IDLE) {
 #ifdef PROXYSQL40
-			if (mybe->server_myds->myconn->backend_auth_type() ==
-				MySQLBackendAuthType::AWS_IAM) {
+			if (mysql_backend_auth_uses_token(mybe->server_myds->myconn->backend_auth_type())) {
 				aws_iam_connect_token_key = AwsIamTokenKey {};
 				aws_iam_connect_token_generation = 0;
 				aws_iam_fresh_token_retry_attempted = false;
@@ -4308,8 +4304,8 @@ bool MySQL_Session::handler_again___status_CONNECTING_SERVER(int *_rc) {
 		switch (rc) {
 			case 0:
 #ifdef PROXYSQL40
-				if (myconn->backend_auth_type() == MySQLBackendAuthType::AWS_IAM) {
-					record_aws_iam_backend_connection(true);
+				if (mysql_backend_auth_uses_token(myconn->backend_auth_type())) {
+					record_backend_token_connection(myconn->backend_auth_type(), true);
 					aws_iam_connect_token_key = AwsIamTokenKey {};
 					aws_iam_connect_token_generation = 0;
 					aws_iam_fresh_token_retry_attempted = false;
@@ -4421,8 +4417,10 @@ bool MySQL_Session::handler_again___status_CONNECTING_SERVER(int *_rc) {
 				const unsigned int connect_errno = mysql_errno(myconn->mysql);
 				MyHGM->p_update_mysql_error_counter(p_mysql_error_type::mysql, myconn->parent->myhgc->hid, myconn->parent->address, myconn->parent->port, connect_errno);
 #ifdef PROXYSQL40
-				if (myconn->backend_auth_type() == MySQLBackendAuthType::AWS_IAM) {
-					record_aws_iam_backend_connection(false);
+				if (mysql_backend_auth_uses_token(myconn->backend_auth_type())) {
+					const MySQLBackendAuthType token_type = myconn->backend_auth_type();
+					const char *token_label = backend_token_log_label(token_type);
+					record_backend_token_connection(token_type, false);
 					const AwsIamTokenKey failed_key = aws_iam_connect_token_key;
 					const uint64_t failed_generation =
 						aws_iam_connect_token_generation;
@@ -4432,15 +4430,18 @@ bool MySQL_Session::handler_again___status_CONNECTING_SERVER(int *_rc) {
 						!aws_iam_fresh_token_retry_attempted &&
 						failed_generation != 0 &&
 						!failed_key.endpoint.empty() && failed_key.port != 0 &&
-						!failed_key.region.empty() &&
+						(token_type != MySQLBackendAuthType::AWS_IAM || !failed_key.region.empty()) &&
 						!failed_key.database_user.empty()) {
-						invalidation_source = acquire_global_aws_iam_token_source();
+						BackendTokenProvider provider;
+						if (backend_token_provider_for(token_type, provider)) {
+							invalidation_source = acquire_backend_token_source(provider);
+						}
 					}
 					if (invalidation_source) {
 						proxy_error(
-							"AWS IAM backend connection failure user='%s' hostgroup=%u endpoint='%s'"
+							"%s backend connection failure user='%s' hostgroup=%u endpoint='%s'"
 							" region='%s' category='backend_auth_rejected' code='' request_id=''\n",
-							failed_key.database_user.c_str(), failed_hostgroup,
+							token_label, failed_key.database_user.c_str(), failed_hostgroup,
 							failed_key.endpoint.c_str(), failed_key.region.c_str());
 						invalidation_source->invalidate(
 							failed_key, failed_generation);
@@ -4454,16 +4455,17 @@ bool MySQL_Session::handler_again___status_CONNECTING_SERVER(int *_rc) {
 					if (connect_errno == ER_ACCESS_DENIED_ERROR &&
 						aws_iam_fresh_token_retry_attempted) {
 						proxy_error(
-							"AWS IAM backend connection failure user='%s' hostgroup=%u endpoint='%s'"
-							" region='%s' category='backend_auth_rejected' code='' request_id=''"
-							" hint='verify_system_clock_for_sigv4_clock_skew'\n",
-							failed_key.database_user.c_str(), failed_hostgroup,
-							failed_key.endpoint.c_str(), failed_key.region.c_str());
+							"%s backend connection failure user='%s' hostgroup=%u endpoint='%s'"
+							" region='%s' category='backend_auth_rejected' code='' request_id=''%s\n",
+							token_label, failed_key.database_user.c_str(), failed_hostgroup,
+							failed_key.endpoint.c_str(), failed_key.region.c_str(),
+							token_type == MySQLBackendAuthType::AWS_IAM
+								? " hint='verify_system_clock_for_sigv4_clock_skew'" : "");
 					} else {
 						proxy_error(
-							"AWS IAM backend connection failure user='%s' hostgroup=%u endpoint='%s'"
+							"%s backend connection failure user='%s' hostgroup=%u endpoint='%s'"
 							" region='%s' category='backend_connect' code='' request_id=''\n",
-							failed_key.database_user.c_str(), failed_hostgroup,
+							token_label, failed_key.database_user.c_str(), failed_hostgroup,
 							failed_key.endpoint.c_str(), failed_key.region.c_str());
 					}
 					static const char generic_error[] = "Unable to connect to backend";
@@ -4667,8 +4669,8 @@ bool MySQL_Session::handler_again___status_CHANGING_USER_SERVER(int *_rc) {
 			requested_policy.failure_code.c_str());
 		NEXT_IMMEDIATE_NEW(WAITING_CLIENT_DATA);
 	}
-	if (myconn->backend_auth_type() == MySQLBackendAuthType::AWS_IAM ||
-		requested_type == MySQLBackendAuthType::AWS_IAM) {
+	if (mysql_backend_auth_uses_token(myconn->backend_auth_type()) ||
+		mysql_backend_auth_uses_token(requested_type)) {
 		myds->destroy_MySQL_Connection_From_Pool(false);
 		myds->fd = 0;
 		myds->DSS = STATE_NOT_INITIALIZED;
@@ -10276,7 +10278,7 @@ void MySQL_Session::handler___client_DSS_QUERY_SENT___server_DSS_NOT_INITIALIZED
 		const MySQLBackendAuthPolicy& backend_auth_policy = backend_auth_policy_for(backend_username);
 		const MySQLBackendAuthType backend_auth_type = backend_auth_policy.type;
 		const bool force_fresh_iam_connection =
-			backend_auth_type == MySQLBackendAuthType::AWS_IAM &&
+			mysql_backend_auth_uses_token(backend_auth_type) &&
 			aws_iam_fresh_token_retry_attempted;
 		// Only a backend row whose 'backend_auth' is malformed is INVALID: a
 		// missing row is PASSWORD (issue #6413). It is not an AWS IAM failure.
@@ -10447,7 +10449,7 @@ void MySQL_Session::handler___client_DSS_QUERY_SENT___server_DSS_NOT_INITIALIZED
 				// IAM checkouts may require asynchronous token acquisition or a fresh
 				// connection, so retain their separate waiter FIFO classification.
 				last_pool_ff = (session_fast_forward || qpo->create_new_conn || force_fresh_iam_connection ||
-					backend_auth_type == MySQLBackendAuthType::AWS_IAM);
+					mysql_backend_auth_uses_token(backend_auth_type));
 				last_pool_gtid = true;
 				last_pool_max_lag_ms = -1;
 #endif // PROXYSQL31
@@ -10461,7 +10463,7 @@ void MySQL_Session::handler___client_DSS_QUERY_SENT___server_DSS_NOT_INITIALIZED
 			} else {
 #ifdef PROXYSQL31
 				last_pool_ff = (session_fast_forward || qpo->create_new_conn || force_fresh_iam_connection ||
-					backend_auth_type == MySQLBackendAuthType::AWS_IAM);
+					mysql_backend_auth_uses_token(backend_auth_type));
 				last_pool_gtid = false;
 				last_pool_max_lag_ms = gtid_writer_fallback ? -1 : (int)qpo->max_lag_ms;
 #endif // PROXYSQL31
@@ -10569,7 +10571,7 @@ void MySQL_Session::handler___client_DSS_QUERY_SENT___server_DSS_NOT_INITIALIZED
 #ifdef PROXYSQL40
 		myconn->set_backend_auth_type(backend_auth_policy.type);
 
-		if (backend_auth_policy.type == MySQLBackendAuthType::AWS_IAM) {
+		if (mysql_backend_auth_uses_token(backend_auth_policy.type)) {
 			MySrvC *server = myconn->parent;
 			aws_iam_state_used = true;
 			aws_iam_connection = myconn;
@@ -10591,11 +10593,13 @@ void MySQL_Session::handler___client_DSS_QUERY_SENT___server_DSS_NOT_INITIALIZED
 			input.ssl_capath = ssl_params != nullptr
 				? ssl_params->ssl_capath
 				: (mysql_thread___ssl_p2s_capath != nullptr ? mysql_thread___ssl_p2s_capath : "");
-			AwsIamTokenSourceLease lease = acquire_global_aws_iam_token_source();
+			BackendTokenProvider provider = BackendTokenProvider::AWS_IAM;
+			backend_token_provider_for(backend_auth_policy.type, provider);
+			AwsIamTokenSourceLease lease = acquire_backend_token_source(provider);
 			input.support_compiled = lease && lease->support_compiled();
 
 			AwsIamConnectionConfigResult config =
-				validate_mysql_aws_iam_connection(input);
+				validate_mysql_backend_token_connection(backend_auth_policy.type, input);
 			aws_iam_token_key = config.key;
 			if (config.status != AwsIamConnectionConfigStatus::OK || !lease) {
 				if (aws_iam_token_key.database_user.empty()) {
@@ -11138,7 +11142,7 @@ void MySQL_Session::create_new_session_and_reset_connection(MySQL_Data_Stream *_
 	MySQL_Data_Stream *new_myds = NULL;
 	MySQL_Connection * mc = _myds->myconn;
 #ifdef PROXYSQL40
-	if (mc->backend_auth_type() == MySQLBackendAuthType::AWS_IAM) {
+	if (mysql_backend_auth_uses_token(mc->backend_auth_type())) {
 		_myds->destroy_MySQL_Connection_From_Pool(false);
 		return;
 	}
