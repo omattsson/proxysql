@@ -234,6 +234,7 @@ Acceptance check after Task 4b: `git grep -n 'MySQLBackendAuthType::AWS_IAM' -- 
 - Connect path: `if (mysql_backend_auth_uses_token(backend_auth_policy.type))`; lease and validator chosen by type; the rest of the wait state stays as is.
 - 1045 path: require `!failed_key.region.empty()` only for `AWS_IAM`; acquire the slot of `myconn->backend_auth_type()`.
 - Follow the rule above Task 4a for every other line.
+- Remove the Task 1 fail-closed shim in `MySQL_Session::backend_auth_policy_for()` (`azure_entra_not_routed`) and its test `test_entra_policy_fails_closed_until_routed` in `aws_iam_session_state_unit-t.cpp`; `entra_session_uses_azure_slot` replaces it.
 
 - [ ] **Step 1: Write the failing tests** (fake sources on both slots):
   - `entra_session_uses_azure_slot`: a session whose user has `azure_entra` parks in `WAITING_AWS_IAM_TOKEN`, and only the Azure fake receives `request()`; the AWS fake receives nothing.
