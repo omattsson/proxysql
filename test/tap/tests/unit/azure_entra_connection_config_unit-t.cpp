@@ -38,7 +38,11 @@ void test_accepted_endpoints() {
 	expect_ok(entra_input("app.mysql.database.azure.com"), "valid_public");
 	expect_ok(entra_input("x.mysql.database.chinacloudapi.cn"), "valid_sovereign: China");
 	expect_ok(entra_input("x.mysql.database.usgovcloudapi.net"), "valid_sovereign: US Gov");
-	expect_ok(entra_input("App.PrivateLink.MySQL.Database.Azure.com"), "uppercase_and_privatelink_accepted");
+	const AwsIamConnectionConfigResult upper = validate_mysql_azure_entra_connection(
+		entra_input("App.PrivateLink.MySQL.Database.Azure.com"));
+	ok(upper.status == AwsIamConnectionConfigStatus::OK &&
+		upper.key.endpoint == "app.privatelink.mysql.database.azure.com",
+		"uppercase_and_privatelink_accepted, keyed in lower case");
 	AwsIamConnectionConfigInput with_region = entra_input("app.mysql.database.azure.com");
 	with_region.region = "eu-west-1";
 	expect_ok(with_region, "region_ignored");

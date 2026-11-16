@@ -377,7 +377,8 @@ AwsIamConnectionConfigResult validate_mysql_aws_iam_connection(
 
 	AwsIamConnectionConfigResult result;
 	result.status = AwsIamConnectionConfigStatus::OK;
-	result.key = { input.configured_endpoint, input.port, input.region, input.database_user };
+	// Lower case: the match above ignores case, and a SigV4 scope like "US-EAST-1" is rejected.
+	result.key = { ascii_lower(input.configured_endpoint), input.port, endpoint_region, input.database_user };
 	return result;
 }
 
@@ -405,7 +406,7 @@ AwsIamConnectionConfigResult validate_mysql_azure_entra_connection(
 
 	AwsIamConnectionConfigResult result;
 	result.status = AwsIamConnectionConfigStatus::OK;
-	result.key = { input.configured_endpoint, input.port, "", input.database_user };
+	result.key = { ascii_lower(input.configured_endpoint), input.port, "", input.database_user };
 	return result;
 }
 
